@@ -1,0 +1,7 @@
+
+    Project Alpha was launched in March 2023. It had a budget of $5 million.
+    The main reason for Project Alpha's failure was severe operational delays caused by a supply chain disruption.
+    The primary database timeout was set to 30 seconds.
+    However, a later audit found that the database timeout was actually set to 60 seconds, which caused cascading failures.
+    The company migrated from monolith to microservices to improve scalability.
+    
