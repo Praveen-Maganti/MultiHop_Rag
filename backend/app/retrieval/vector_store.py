@@ -1,7 +1,7 @@
 import faiss
 import numpy as np
 from typing import List, Dict
-from app.utils.embeddings import get_embedding
+from app.utils.embeddings import get_embedding, get_embeddings_batch
 
 # In-memory store: {document_id: {"index": faiss_index, "chunks": [chunk_dicts]}}
 vector_db = {}
@@ -14,7 +14,7 @@ def initialize_vector_store(document_id: str, chunks: List[Dict]):
         return
 
     texts = [chunk["text"] for chunk in chunks]
-    embeddings = [get_embedding(text) for text in texts]
+    embeddings = get_embeddings_batch(texts)
 
     embedding_matrix = np.array(embeddings).astype('float32')
     faiss.normalize_L2(embedding_matrix)

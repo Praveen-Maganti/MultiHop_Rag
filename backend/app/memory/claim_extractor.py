@@ -2,41 +2,28 @@ import re
 
 def extract_claims(text: str) -> list:
     """
-    Rule-based KV parser for structured text.
-    Replaces the LLM extractor to reduce latency.
+    Extracts atomic factual sentences from chunk text.
+    Uses sentence splitting as primary strategy — works for all document types.
+    KV parsing is a secondary fallback only for strictly structured records.
     """
-    claims = []
-    
-    # Matches patterns like "Name:Praveen" or "Age: 21"
-    kv_pattern = r'([A-Za-z]+)\s*:\s*([^:\n]+)(?=\s+[A-Za-z]+\s*:|$)'
+    if not text or len(text.strip()) < 10:
+        return []
+
+    # Primary: split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+
+    # If we got good sentences, return top 5 by length (longer = more informative)
+    if len(sentences) >= 2:
+        sentences.sort(key=len, reverse=True)
+        return sentences[:5]
+
+    # Secondary fallback: KV pattern only for short structured records
+    kv_pattern = r'([A-Za-z][A-Za-z ]{1,20})\s*:\s*([^:\n]{3,80})'
     matches = re.findall(kv_pattern, text)
-    
     if matches:
-        name_val = "The entity"
-        for k, v in matches:
-            if k.lower() == "name":
-                name_val = v.strip()
-                break
-                
-        for k, v in matches:
-            k = k.strip()
-            v = v.strip()
-            
-            if k.lower() == "name":
-                claims.append(f"{v}'s name is {v}.")
-            elif k.lower() == "age":
-                claims.append(f"{name_val} is {v} years old.")
-            elif k.lower() == "university":
-                claims.append(f"{name_val} attends {v} University.")
-            elif k.lower() == "year":
-                claims.append(f"{name_val} is a {v}-year student.")
-            elif k.lower() == "cgpa":
-                claims.append(f"{name_val} has a CGPA of {v}.")
-            else:
-                claims.append(f"{name_val}'s {k} is {v}.")
-    else:
-        # Fallback to sentence splitting if not KV formatted
-        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-        claims = [s.strip() for s in sentences if len(s.strip()) > 5]
-        
-    return claims[:5]
+        claims = [f"{k.strip()} is {v.strip()}." for k, v in matches]
+        return claims[:5]
+
+    # Last resort: return the whole text as one claim
+    return [text.strip()[:300]]

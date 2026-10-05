@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
-from app.rag.standard_rag import run_standard_rag
+from app.rag.multi_hop_rag import run_multi_hop_rag
 from app.rag.proposed_rag import run_proposed_rag
 from app.evaluation.evaluator import evaluate_result
 from app.models.database import save_experiment_run, init_db
@@ -30,26 +30,26 @@ async def run_experiment(request: ExperimentRequest):
         gt = q_item.ground_truth
         
         try:
-            std_res = run_standard_rag(request.document_id, q)
-            std_adapter = {
-                "answer": std_res.get("answer", ""),
-                "memory": [{"claim": e["text"], "text": e["text"]} for e in std_res.get("evidence", [])]
+            mh_res = run_multi_hop_rag(request.document_id, q)
+            mh_adapter = {
+                "answer": mh_res.get("answer", ""),
+                "memory": [{"claim": e["text"], "text": e["text"]} for e in mh_res.get("evidence", [])]
             }
-            std_eval = evaluate_result(std_adapter, ground_truth=gt)
-            
+            std_eval = evaluate_result(mh_adapter, ground_truth=gt)
+
             save_experiment_run({
                 "experiment_id": experiment_id,
                 "document_id": request.document_id,
                 "question": q,
                 "ground_truth": gt,
-                "system_type": "standard",
-                "answer": std_res.get("answer", ""),
-                "retrieved_chunks": len(std_res.get("evidence", [])),
+                "system_type": "multihop",
+                "answer": mh_res.get("answer", ""),
+                "retrieved_chunks": len(mh_res.get("evidence", [])),
                 "memory_items": 0,
-                "hops": 1,
-                "retrieval_calls": std_res.get("metrics", {}).get("retrieval_calls", 0),
-                "tokens": std_res.get("metrics", {}).get("tokens", std_res.get("metrics", {}).get("estimated_tokens", 0)),
-                "latency": std_res.get("metrics", {}).get("latency", std_res.get("metrics", {}).get("latency_seconds", 0)),
+                "hops": mh_res.get("metrics", {}).get("hops", 1),
+                "retrieval_calls": mh_res.get("metrics", {}).get("retrieval_calls", 0),
+                "tokens": mh_res.get("metrics", {}).get("estimated_tokens", 0),
+                "latency": mh_res.get("metrics", {}).get("latency_seconds", 0),
                 "evidence_coverage": std_eval.get("evidence_coverage", 0.0),
                 "unsupported_claim_rate": std_eval.get("unsupported_claim_ratio", 0.0),
                 "f1": std_eval.get("f1", 0.0),

@@ -28,11 +28,14 @@ class MemoryItem:
 
     def calculate_retention_score(self, current_hop: int, weights=None):
         if weights is None:
-            weights = {"w1": 1.0, "w2": 1.0, "w3": 1.0, "w4": 1.0, "w5": 1.0, "w6": 0.1}
-            
+            # Rel and Sup weighted higher — they directly measure answer quality
+            # Nov weighted lower — novelty alone shouldn't keep irrelevant items
+            # Redundancy penalized strongly, age penalty mild
+            weights = {"w1": 2.0, "w2": 2.0, "w3": 0.5, "w4": 1.0, "w5": 1.5, "w6": 0.1}
+
         self.novelty_score = max(0.0, 1.0 - self.redundancy_score)
         age_penalty = (current_hop - self.last_used_hop) * weights["w6"]
-        
+
         score = (
             weights["w1"] * self.relevance_score +
             weights["w2"] * self.evidence_score +
@@ -55,7 +58,12 @@ class WorkingMemory:
         
     def get_all_text(self) -> str:
         active_items = [i for i in self.items if i.status in ["ACTIVE", "VERIFIED"]]
-        return "\\n\\n".join([f"Evidence {item.id} (Claim: {item.claim}): {item.text}" for item in active_items])
+        # Sort by utility score descending so most useful evidence comes first
+        active_items.sort(key=lambda x: x.utility_score, reverse=True)
+        return "\n\n".join([
+            f"[Evidence {idx+1}] {item.claim}\nSource: {item.text[:300]}"
+            for idx, item in enumerate(active_items)
+        ])
         
     def to_dict(self):
         return {

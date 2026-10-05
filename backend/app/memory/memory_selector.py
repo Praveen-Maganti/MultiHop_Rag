@@ -25,7 +25,7 @@ def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, cur
         query_embedding = get_cached_embedding(question)
         sim_to_query = compute_cosine_similarity(query_embedding, claim_embedding)
         
-        RETRIEVAL_SIMILARITY_THRESHOLD = float(os.getenv("RETRIEVAL_SIMILARITY_THRESHOLD", "0.30"))
+        RETRIEVAL_SIMILARITY_THRESHOLD = float(os.getenv("RETRIEVAL_SIMILARITY_THRESHOLD", "0.40"))
         if sim_to_query < RETRIEVAL_SIMILARITY_THRESHOLD:
             continue
             
@@ -39,7 +39,7 @@ def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, cur
         )
         
         metrics["evidence_llm_calls"] += 1
-        scores = score_evidence(question, item.claim)
+        scores = score_evidence(question, item.claim, full_text=chunk["text"])
         item.relevance_score = scores.get("relevance", 0.0)
         item.evidence_score = scores.get("support", 0.0)
         item.reliability = scores.get("reliability", 0.0)

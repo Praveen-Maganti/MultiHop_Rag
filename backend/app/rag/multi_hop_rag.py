@@ -1,6 +1,6 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
-from app.retrieval.vector_store import search_vector_store
+from app.retrieval.vector_store import search_all_documents, search_vector_store
 from app.retrieval.reranker import rerank_chunks
 from app.utils.embeddings import is_semantically_similar_query
 import time
@@ -11,175 +11,211 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.0,
 )
 
+# Multi-Hop RAG: iterative retrieval with CONSTANT flat memory.
+# All retrieved chunks are accumulated without any scoring, eviction, or
+# adaptive management. The LLM reasons over the full growing context each hop.
 multi_hop_prompt = PromptTemplate(
     template="""
-You are an advanced reasoning assistant. Your goal is to answer the question using ONLY the provided context.
+You are a multi-hop reasoning assistant. Answer the question using ONLY the provided context chunks.
+Do NOT use any outside knowledge.
 
 Question:
 {question}
 
-Context:
+Accumulated Context (all chunks retrieved so far across all hops):
 {context}
 
 Previous Search Queries:
 {previous_queries}
 
 INSTRUCTIONS:
-1. Identify which parts of the question are already answered by the Context.
-2. Identify any missing information required to fully answer the question.
-3. If you have sufficient evidence to answer the question, or if you cannot find it after multiple searches, output a JSON object with action "ANSWER" and provide the final answer.
-4. If you need more information, generate exactly ONE specific query for the missing information. Output a JSON object with action "SEARCH" and the new query.
-5. Do not search for information already present. Do not repeat previous searches. Do not use outside knowledge.
+1. Check if the context already contains enough information to fully answer the question.
+2. If YES — output {{"action": "ANSWER", "answer": "<your answer>"}}
+3. If NO — output {{"action": "SEARCH", "query": "<one specific sub-question for missing info>"}}
+4. Never repeat a previous search query.
+5. Never use knowledge outside the provided context.
 
-OUTPUT FORMAT:
-Return ONLY a valid JSON object matching one of these two structures, with no markdown formatting:
-{{"action": "SEARCH", "query": "..."}}
-OR
-{{"action": "ANSWER", "answer": "..."}}
+Return ONLY a valid JSON object. No markdown, no explanation.
 """,
     input_variables=["question", "context", "previous_queries"]
 )
 
+
 def run_multi_hop_rag(document_id: str, question: str, max_hops: int = 3):
-    # Phase 2 configurations
+    """
+    Multi-Hop RAG with CONSTANT FLAT MEMORY.
+
+    Architecture:
+    - Each hop retrieves top-10 chunks via cross-document FAISS search.
+    - Reranks to top-3 using CrossEncoder.
+    - Appends ALL new unique chunks to a flat cumulative_context list.
+    - NO scoring, NO eviction, NO adaptive management — memory only grows.
+    - LLM receives the full accumulated context every hop and decides
+      SEARCH (next hop) or ANSWER (terminate).
+    - Duplicate query detection prevents infinite loops.
+    """
     RETRIEVAL_TOP_K = 10
     RERANK_TOP_K = 3
-    MAX_EVIDENCE_CHUNKS = 12
-    
+
     start_time = time.time()
-    
+
+    # Constant flat memory — only appended, never pruned
     cumulative_context = []
     previous_queries = []
     retrieval_calls = 0
     current_query = question
     final_answer = "Could not formulate an answer within the maximum number of hops."
     chain = multi_hop_prompt | llm
-    
-    reasoning_trace = []
+    hop_trace = []
     total_input_tokens = 0
     total_output_tokens = 0
-    
+    decision = {"action": "STOP"}
+
     for hop in range(max_hops):
-        hop_record = {
-            "hop": hop + 1,
-            "query": current_query,
-            "retrieved_chunks": [],
-            "decision": None,
-            "next_query": None,
-            "stop_reason": None
-        }
-        
-        # 1. RETRIEVE & RERANK
+        # 1. RETRIEVE across all documents (cross-document multi-hop)
         retrieval_calls += 1
-        raw_chunks = search_vector_store(document_id, current_query, top_k=RETRIEVAL_TOP_K)
-        
-        # Rerank Top 10 -> Top 3
-        new_chunks = rerank_chunks(current_query, raw_chunks, top_k=RERANK_TOP_K)
-        
-        # 2. HANDLE EMPTY RETRIEVAL
-        if not new_chunks:
-            hop_record["stop_reason"] = "no_useful_chunks"
-            reasoning_trace.append(hop_record)
-            final_answer = "Stopped early: No relevant chunks found for query."
+        try:
+            raw_chunks = search_all_documents(current_query, top_k=RETRIEVAL_TOP_K)
+        except Exception:
+            raw_chunks = search_vector_store(document_id, current_query, top_k=RETRIEVAL_TOP_K)
+
+        # 2. RERANK top-10 → top-3 using CrossEncoder
+        reranked = rerank_chunks(current_query, raw_chunks, top_k=RERANK_TOP_K)
+
+        if not reranked:
+            hop_trace.append({
+                "hop": hop + 1,
+                "query": current_query,
+                "chunks_retrieved": 0,
+                "chunks_added": 0,
+                "total_context_size": len(cumulative_context),
+                "action": "STOP",
+                "next_query": None,
+                "stop_reason": "no_useful_chunks"
+            })
+            final_answer = "Stopped: No relevant chunks found."
             break
-            
-        for c in new_chunks:
-            hop_record["retrieved_chunks"].append(c["chunk_id"])
-            if not any(existing['chunk_id'] == c['chunk_id'] for existing in cumulative_context):
+
+        # 3. APPEND new unique chunks to flat constant memory (no eviction)
+        added = 0
+        for c in reranked:
+            if not any(existing["chunk_id"] == c["chunk_id"] for existing in cumulative_context):
+                c["hop_added"] = hop + 1
                 cumulative_context.append(c)
-                
-        # MAX CONTEXT LIMIT: If over 12 chunks, rerank all and keep top 8
-        if len(cumulative_context) > MAX_EVIDENCE_CHUNKS:
-            cumulative_context = rerank_chunks(question, cumulative_context, top_k=8)
-            
-        # 3. UPDATE PREVIOUS QUERIES
+                added += 1
+
         if current_query not in previous_queries:
             previous_queries.append(current_query)
-            
-        context_text = "\\n\\n".join([f"Chunk {c['chunk_id']}:\\n{c['text']}" for c in cumulative_context])
-        queries_text = "\\n".join(previous_queries) if previous_queries else "None"
-        
-        # 4. CALL LLM (Structured Output)
+
+        # 4. BUILD full context string from ALL accumulated chunks
+        context_text = "\n\n".join(
+            [f"[Chunk {c['chunk_id']}]\n{c['text']}" for c in cumulative_context]
+        )
+        queries_text = "\n".join(previous_queries)
+
+        # 5. LLM REASONING over full flat context
         response = chain.invoke({
-            "question": question, 
+            "question": question,
             "context": context_text,
             "previous_queries": queries_text
         })
-        
-        if hasattr(response, 'usage_metadata') and response.usage_metadata:
-            total_input_tokens += response.usage_metadata.get('input_tokens', 0)
-            total_output_tokens += response.usage_metadata.get('output_tokens', 0)
-        
+
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            total_input_tokens += response.usage_metadata.get("input_tokens", 0)
+            total_output_tokens += response.usage_metadata.get("output_tokens", 0)
+
         content_obj = response.content
         if isinstance(content_obj, list):
             output_text = "".join([p.get("text", "") if isinstance(p, dict) else str(p) for p in content_obj])
         else:
             output_text = str(content_obj)
-            
+
         text = output_text.strip().replace("```json", "").replace("```", "").strip()
         try:
             decision = json.loads(text)
-        except:
+        except Exception:
             decision = {"action": "ANSWER", "answer": text}
-            
-        hop_record["decision"] = decision.get("action", "ANSWER")
-        
-        # 5. TERMINATION CONDITIONS
-        if hop_record["decision"] == "ANSWER":
+
+        action = decision.get("action", "ANSWER")
+        next_query = decision.get("query", "").strip() if action == "SEARCH" else None
+
+        mem_chars = sum(len(c.get("text", "")) for c in cumulative_context)
+        mem_tokens = mem_chars // 4
+
+        hop_trace.append({
+            "hop": hop + 1,
+            "query": current_query,
+            "chunks_retrieved": len(reranked),
+            "chunks_added": added,
+            "total_context_size": len(cumulative_context),
+            "memory_items_count": len(cumulative_context),
+            "memory_chars": mem_chars,
+            "memory_tokens_est": mem_tokens,
+            "action": action,
+            "next_query": next_query,
+            "stop_reason": None
+        })
+
+        # 6. TERMINATION
+        if action == "ANSWER":
             final_answer = decision.get("answer", "")
-            hop_record["stop_reason"] = "sufficient_evidence"
-            reasoning_trace.append(hop_record)
+            hop_trace[-1]["stop_reason"] = "sufficient_evidence"
             break
-        elif hop_record["decision"] == "SEARCH":
-            next_query = decision.get("query", "").strip()
-            hop_record["next_query"] = next_query
-            
-            # Semantic Duplicate Query Detection
-            is_semantic_duplicate = is_semantically_similar_query(next_query, previous_queries, threshold=0.90)
-            
-            if next_query in previous_queries or is_semantic_duplicate:
-                hop_record["stop_reason"] = "repeated_query"
-                reasoning_trace.append(hop_record)
-                final_answer = "Stopped early: Model attempted to repeat a semantically similar search query."
+        elif action == "SEARCH" and next_query:
+            is_duplicate = is_semantically_similar_query(next_query, previous_queries, threshold=0.90)
+            if next_query in previous_queries or is_duplicate:
+                hop_trace[-1]["stop_reason"] = "repeated_query"
+                final_answer = "Stopped: Repeated search query detected."
                 break
-                
             current_query = next_query
-            reasoning_trace.append(hop_record)
         else:
+            hop_trace[-1]["stop_reason"] = "fallback"
             final_answer = str(decision)
-            hop_record["stop_reason"] = "fallback"
-            reasoning_trace.append(hop_record)
             break
-            
-    if hop == max_hops - 1 and reasoning_trace and not reasoning_trace[-1].get("stop_reason"):
-         reasoning_trace[-1]["stop_reason"] = "max_hops_reached"
-         
+
+    if hop_trace and not hop_trace[-1].get("stop_reason"):
+        hop_trace[-1]["stop_reason"] = "max_hops_reached"
+
     end_time = time.time()
     latency = end_time - start_time
-    
+
     estimated_tokens = total_input_tokens + total_output_tokens
     if estimated_tokens == 0:
-        estimated_tokens = len(context_text) // 4 + len(final_answer) // 4 if 'context_text' in locals() else 0
-        
+        estimated_tokens = len(context_text) // 4 + len(final_answer) // 4 if cumulative_context else 0
+
     metrics = {
         "retrieval_calls": retrieval_calls,
         "estimated_tokens": estimated_tokens,
         "latency_seconds": round(latency, 2),
-        "hops": hop + 1,
+        "hops": len(hop_trace),
         "unique_chunks": len(cumulative_context),
         "queries_generated": len(previous_queries),
-        "answer_generated": (decision.get("action") == "ANSWER" if 'decision' in locals() else False),
-        "stop_reason": reasoning_trace[-1].get("stop_reason") if reasoning_trace else "unknown"
+        "stop_reason": hop_trace[-1].get("stop_reason", "unknown") if hop_trace else "unknown"
     }
-    
+
+    # Format evidence for frontend (same shape as proposed RAG memory items)
+    formatted_evidence = [
+        {"id": c["chunk_id"], "text": c["text"], "score": round(c.get("score", 0.0), 4)}
+        for c in cumulative_context
+    ]
+
+    # Flat working memory — same chunks, tagged with hop_added, no scores/eviction
+    flat_memory = [
+        {
+            "id": c["chunk_id"],
+            "text": c["text"],
+            "score": round(c.get("score", 0.0), 4),
+            "hop_added": c.get("hop_added", 1),
+            "status": "ACTIVE"
+        }
+        for c in cumulative_context
+    ]
+
     return {
         "answer": final_answer,
-        "evidence": cumulative_context,
-        "reasoning_trace": reasoning_trace,
+        "evidence": formatted_evidence,
+        "memory": flat_memory,
+        "hop_trace": hop_trace,
         "metrics": metrics,
-        "evaluation": {
-             "f1": "--",
-             "coverage": "--",
-             "unsupported": "--"
-        }
+        "evaluation": {"f1": "--", "coverage": "--", "unsupported": "--"}
     }

@@ -13,37 +13,36 @@ llm = ChatGoogleGenerativeAI(
 
 reasoning_prompt = PromptTemplate(
     template="""
-You are an advanced reasoning agent equipped with an Evidence- and Utility-Aware Working Memory.
-Your goal is to answer the question using ONLY the provided memory.
+You are an advanced reasoning agent with an Evidence-Aware Working Memory.
+Answer the question using ONLY the evidence provided in Working Memory below.
 
 Question:
 {question}
 
-Working Memory:
+Working Memory (sorted by relevance, highest first):
 {memory_text}
 
 Previous Search Queries:
 {previous_queries}
 
 INSTRUCTIONS:
-1. Identify which parts of the question are already answered by the Working Memory.
-2. Identify any missing information required to fully answer the question.
-3. If you have sufficient evidence to answer the question, output a JSON object with action "ANSWER" and provide the final answer. Answer concisely using only facts from memory.
-4. If you need more information, generate exactly ONE specific query for the missing information. Output a JSON object with action "SEARCH" and the new query.
-5. If the memory contains conflicting information, explicitly address the conflict in your answer.
-6. Do not search for information already present. Do not repeat previous searches. Do not use outside knowledge.
+1. Read ALL evidence items carefully before deciding.
+2. If the Working Memory contains enough information to fully answer the question — output ANSWER.
+3. If critical information is missing — output SEARCH with ONE specific sub-question.
+4. If memory contains conflicting information — address the conflict explicitly in your answer.
+5. Never repeat a previous search query. Never use outside knowledge.
+6. Your answer must be grounded in the evidence. Quote or paraphrase the evidence directly.
 
-OUTPUT FORMAT:
-Return ONLY a valid JSON object matching one of these two structures, with no markdown formatting:
-{{"action": "SEARCH", "query": "..."}}
+OUTPUT FORMAT (return ONLY valid JSON, no markdown):
+{{"action": "ANSWER", "answer": "<complete answer grounded in evidence>"}}
 OR
-{{"action": "ANSWER", "answer": "..."}}
+{{"action": "SEARCH", "query": "<specific missing information>"}}
 """,
     input_variables=["question", "memory_text", "previous_queries"]
 )
 
 
-def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_memory_items: int = 15):
+def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_memory_items: int = 5):
     from app.memory.working_memory import WorkingMemory
     from app.memory.memory_selector import select_evidence
     from app.memory.memory_compressor import compress_memory
@@ -126,7 +125,18 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
         # 4. SELECT EVIDENCE → MEMORY
         select_evidence(new_chunks, current_query, memory, current_hop=hop + 1, metrics=metrics_dict)
 
+        # Re-score ALL existing active items with updated age penalty each hop
         active_items = [i for i in memory.items if i.status in ["ACTIVE", "VERIFIED"]]
+        for item in active_items:
+            # Update last_used_hop if this item's claim is relevant to current query
+            from app.utils.embeddings import get_cached_embedding, compute_cosine_similarity
+            query_emb = get_cached_embedding(current_query)
+            if item.embedding:
+                sim = compute_cosine_similarity(query_emb, item.embedding)
+                if sim >= 0.40:
+                    item.last_used_hop = hop + 1
+            # Recalculate retention score with current hop (age penalty grows for stale items)
+            item.calculate_retention_score(hop + 1)
         trace.record_memory_update(items_before_retrieval, len(new_chunks), len(active_items))
 
         print("Memory after hop:")
@@ -183,13 +193,25 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
             trace.record_error("JSON_PARSE_ERROR", f"LLM returned invalid JSON: {str(e)}")
             decision = {"action": "ANSWER", "answer": text}
 
+        active_mem = [i for i in memory.items if i.status in ["ACTIVE", "VERIFIED"]]
+        mem_chars = sum(len(i.claim) for i in active_mem)
+        mem_tokens = mem_chars // 4
+
         # Record this hop in the hop_trace
         hop_trace.append({
             "hop": hop + 1,
             "query": current_query,
             "evidence": hop_evidence_summary,
             "action": decision.get("action", "UNKNOWN"),
-            "next_query": decision.get("query") if decision.get("action") == "SEARCH" else None
+            "next_query": decision.get("query") if decision.get("action") == "SEARCH" else None,
+            "memory_items_count": len(active_mem),
+            "memory_before": items_before_retrieval,
+            "memory_after": len(active_mem),
+            "memory_chars": mem_chars,
+            "memory_tokens_est": mem_tokens,
+            "duplicates_removed": compression_metrics.get("duplicates_removed", 0),
+            "low_utility_removed": compression_metrics.get("low_utility_removed", 0),
+            "compression_ratio": compression_metrics.get("compression_ratio", "0%")
         })
 
         # 7. TERMINATION
@@ -242,7 +264,7 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
         "estimated_tokens": estimated_tokens,
         "latency_seconds": round(latency, 2),
         "hops": hop + 1,
-        "memory_items": len(memory.items),
+        "memory_items": len([i for i in memory.items if i.status in ["ACTIVE", "VERIFIED"]]),
         "queries_generated": len(previous_queries),
         "answer_generated": (decision.get("action") == "ANSWER"),
         "stop_reason": trace.hops[-1]["decision"].get("stop_reason", "unknown") if trace.hops else "unknown"

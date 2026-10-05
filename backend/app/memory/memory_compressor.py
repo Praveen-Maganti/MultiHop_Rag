@@ -51,8 +51,8 @@ def compress_memory(memory, reasoning_state: dict, max_items: int) -> Dict:
         if not is_duplicate:
             unique_items.append(item)
             
-    # Determine if expensive LLM evaluation is actually needed
-    if len(unique_items) <= max_items and not any(i.conflict_importance >= 0.7 for i in unique_items):
+    # Always run utility estimation — skip only if memory is tiny AND no conflicts
+    if len(unique_items) <= max(3, max_items // 3) and not any(i.conflict_importance >= 0.7 for i in unique_items):
         final_active = [i for i in memory.items if i.status in ["ACTIVE", "VERIFIED"]]
         metrics["after_compression"] = len(final_active)
         if metrics["before_compression"] > 0:

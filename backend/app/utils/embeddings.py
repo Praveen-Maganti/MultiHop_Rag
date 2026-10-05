@@ -12,7 +12,14 @@ except Exception as e:
 def get_embedding(text: str) -> list:
     if not embedding_model:
         raise RuntimeError("Embedding model not loaded properly.")
-    return embedding_model.encode(text).tolist()
+    if text is None:
+        text = ""
+    return embedding_model.encode(str(text)).tolist()
+
+def get_embeddings_batch(texts: list) -> list:
+    if not embedding_model:
+        raise RuntimeError("Embedding model not loaded properly.")
+    return embedding_model.encode(texts, batch_size=32, show_progress_bar=False).tolist()
 
 query_cache = {}
 embedding_cache = {}

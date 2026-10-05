@@ -10,6 +10,7 @@ function App() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [currentMode, setCurrentMode] = useState('socratic');
 
   const handleFileUpload = async (file) => {
     setLoading(true);
@@ -49,21 +50,21 @@ function App() {
     setResults(null);
   };
 
-  const handleAsk = async (question, groundTruth) => {
+  const handleAsk = async (question, groundTruth, mode = 'socratic') => {
     if (uploadedFiles.length === 0) {
       alert('Please upload at least one document first.');
       return;
     }
 
     setLoading(true);
+    setCurrentMode(mode);
     try {
-      // Use the first uploaded document_id as the primary reference.
-      // The proposed RAG will search_all_documents automatically.
       const primaryDocId = uploadedFiles[0].document_id;
 
       const body = {
         document_id: primaryDocId,
         question: question,
+        mode: mode
       };
       if (groundTruth) body.ground_truth = groundTruth;
 
@@ -88,8 +89,8 @@ function App() {
   return (
     <div className="app-container">
       <header>
-        <h1>Adaptive Memory RAG</h1>
-        <p className="subtitle">Evidence- and Utility-Aware Working Memory Evaluation</p>
+        <h1>State-Aware Multi-Hop RAG</h1>
+        <p className="subtitle">Dynamic Working Memory &amp; Cognitive Workspace for Complex Reasoning</p>
       </header>
 
       <UploadPanel
@@ -104,13 +105,13 @@ function App() {
 
       {loading && (
         <div style={{ textAlign: 'center', margin: '2rem', color: 'var(--accent-color)' }}>
-          Processing RAG pipelines across {uploadedFiles.length} document{uploadedFiles.length !== 1 ? 's' : ''}...
+          Executing reasoning pipeline with dynamic working memory across {uploadedFiles.length} document{uploadedFiles.length !== 1 ? 's' : ''}...
         </div>
       )}
 
       {!loading && results && (
         <>
-          <ComparisonView results={results} />
+          <ComparisonView results={results} mode={currentMode} />
           <MetricsPanel results={results} />
         </>
       )}
