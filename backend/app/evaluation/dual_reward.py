@@ -12,6 +12,7 @@ import os
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash-lite",
     temperature=0.0,
+    max_output_tokens=512,
 )
 
 def safe_invoke(chain, input_data: dict, max_retries: int = 3):
