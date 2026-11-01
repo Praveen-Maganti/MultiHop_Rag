@@ -46,13 +46,15 @@ class HybridRetriever:
     def __init__(self):
         self.config = get_config().retrieval
 
-    def lexical_search(self, query: str, top_k: int = 8) -> List[Dict[str, Any]]:
-        """Performs lexical BM25 ranking over all indexed chunks in vector_db."""
+    def lexical_search(self, query: str, document_id: Optional[str] = None, top_k: int = 8) -> List[Dict[str, Any]]:
+        """Performs lexical BM25 ranking over indexed chunks in vector_db (filtered by document_id if provided)."""
         if not vector_db:
             return []
 
         all_chunks = []
         for doc_id, store in vector_db.items():
+            if document_id and doc_id != document_id:
+                continue
             for c in store.get("chunks", []):
                 copy_c = dict(c)
                 copy_c["source_document_id"] = doc_id
@@ -145,7 +147,7 @@ class HybridRetriever:
         """
         # 1. Fetch dense and lexical candidates
         dense_cand = self.dense_search(query, document_id, top_k=self.config.top_k_dense)
-        lexical_cand = self.lexical_search(query, top_k=self.config.top_k_lexical)
+        lexical_cand = self.lexical_search(query, document_id=document_id, top_k=self.config.top_k_lexical)
 
         # 2. Fuse candidates
         fused = self.reciprocal_rank_fusion(dense_cand, lexical_cand, top_k=self.config.top_k_dense + self.config.top_k_lexical)

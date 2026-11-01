@@ -64,6 +64,19 @@ async def chat(request: ChatRequest):
             "unsupported": selected_eval.get("unsupported_claim_ratio", 0.0)
         }
 
+        # Ensure tokens and estimated_tokens are populated for UI metrics table
+        if "metrics" in state_aware_results:
+            tok = state_aware_results["metrics"].get("tokens") or state_aware_results["metrics"].get("estimated_tokens")
+            if tok:
+                state_aware_results["metrics"]["tokens"] = tok
+                state_aware_results["metrics"]["estimated_tokens"] = tok
+
+        if "metrics" in multihop_results:
+            tok = multihop_results["metrics"].get("estimated_tokens") or multihop_results["metrics"].get("tokens")
+            if tok:
+                multihop_results["metrics"]["tokens"] = tok
+                multihop_results["metrics"]["estimated_tokens"] = tok
+
         return {
             "standard": multihop_results,
             "proposed": {

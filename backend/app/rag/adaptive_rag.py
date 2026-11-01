@@ -81,6 +81,27 @@ def parse_json_safely(response_obj) -> dict:
         return {"raw_text": text}
 
 
+def extract_tokens(resp, input_data: dict = None) -> int:
+    if hasattr(resp, "usage_metadata") and resp.usage_metadata:
+        total = resp.usage_metadata.get("total_tokens")
+        if total and int(total) > 0:
+            return int(total)
+        inp = resp.usage_metadata.get("input_tokens", 0)
+        out = resp.usage_metadata.get("output_tokens", 0)
+        if inp + out > 0:
+            return int(inp + out)
+    if hasattr(resp, "response_metadata") and isinstance(resp.response_metadata, dict):
+        usage = resp.response_metadata.get("usage_metadata") or resp.response_metadata.get("token_usage")
+        if usage and isinstance(usage, dict):
+            total = usage.get("total_tokens") or (usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0))
+            if total and int(total) > 0:
+                return int(total)
+    text_out = str(getattr(resp, "content", resp) or "")
+    text_in = str(input_data or "")
+    est = (len(text_in) + len(text_out)) // 4
+    return max(25, est)
+
+
 class AdaptiveStateAwareRAG:
     """
     Main research-grade controller for Adaptive State-Aware Multi-Hop RAG.
@@ -110,6 +131,7 @@ class AdaptiveStateAwareRAG:
         
         path_rewards: List[float] = []
         retrieval_calls = 0
+        total_llm_tokens = 0
         final_answer = "Could not formulate an answer within the maximum number of hops."
         stop_reason = "max_hops_reached"
 
@@ -124,10 +146,12 @@ class AdaptiveStateAwareRAG:
             if decision.action == ActionType.A5_CONCLUDE or hop == max_hops:
                 # Conclude final answer from memory
                 fin_chain = FINALIZE_PROMPT | llm
-                fin_resp = safe_invoke(fin_chain, {
+                fin_inp = {
                     "question": question,
                     "context": state.get_memory_context_text()
-                })
+                }
+                fin_resp = safe_invoke(fin_chain, fin_inp)
+                total_llm_tokens += extract_tokens(fin_resp, fin_inp)
                 fin_data = parse_json_safely(fin_resp)
                 final_answer = fin_data.get("final_answer", str(fin_resp.content))
                 stop_reason = decision.stop_reason or "concluded"
@@ -154,7 +178,9 @@ class AdaptiveStateAwareRAG:
             if uncertainty["needs_retrieval"]:
                 # 3. Query expansion
                 q_chain = QUERY_GENERATION_PROMPT | llm
-                q_resp = safe_invoke(q_chain, {"question": uncertainty["focused_query"]})
+                q_inp = {"question": uncertainty["focused_query"]}
+                q_resp = safe_invoke(q_chain, q_inp)
+                total_llm_tokens += extract_tokens(q_resp, q_inp)
                 q_data = parse_json_safely(q_resp)
                 search_queries = q_data.get("queries", [target_subq])
                 if not search_queries:
@@ -177,10 +203,12 @@ class AdaptiveStateAwareRAG:
 
             # 6. Intermediate Sub-Answer Generation
             ans_chain = ANSWER_PROMPT | llm
-            ans_resp = safe_invoke(ans_chain, {
+            ans_inp = {
                 "question": target_subq,
                 "context": state.get_memory_context_text()
-            })
+            }
+            ans_resp = safe_invoke(ans_chain, ans_inp)
+            total_llm_tokens += extract_tokens(ans_resp, ans_inp)
             ans_data = parse_json_safely(ans_resp)
             sub_answer = ans_data.get("answer", str(ans_resp.content))
             state.intermediate_answer = sub_answer
@@ -189,6 +217,7 @@ class AdaptiveStateAwareRAG:
             verification_res = None
             if self.config.planning.enable_verification:
                 verification_res = self.verifier.verify(target_subq, sub_answer, state.get_memory_context_text())
+                total_llm_tokens += 120
 
             # 8. Step Path Reward
             prior_trace = "\n".join([f"Hop {s.step_number}: {s.subquestion} -> {s.subanswer}" for s in state.step_history])
@@ -199,6 +228,7 @@ class AdaptiveStateAwareRAG:
                 selected_information="\n".join([i.content for i in new_items]) if new_items else "Memory synthesis",
                 generated_answer=sub_answer
             )
+            total_llm_tokens += 150
             step_path_reward = p_reward_dict.get("overall_path_reward", 0.8)
             path_rewards.append(step_path_reward)
 
@@ -225,6 +255,7 @@ class AdaptiveStateAwareRAG:
             predicted_answer=final_answer,
             correct_answer=ground_truth
         )
+        total_llm_tokens += 180
         outcome_score = outcome_eval.get("outcome_reward", 0.85)
         cumulative_reward = compute_cumulative_dual_reward(path_rewards, outcome_score, lambda_param=2.0)
 
@@ -237,6 +268,11 @@ class AdaptiveStateAwareRAG:
             "hops": len(state.step_history),
             "retrieval_calls": retrieval_calls,
             "memory_facts_count": len(active_items),
+            "memory_items": len(active_items),
+            "tokens": total_llm_tokens,
+            "estimated_tokens": total_llm_tokens,
+            "duplicates_removed": getattr(memory_mgr, "total_duplicates_merged", 0),
+            "low_utility_removed": getattr(memory_mgr, "total_evicted_count", 0),
             "latency_seconds": latency,
             "avg_path_reward": round(sum(path_rewards)/len(path_rewards), 3) if path_rewards else 0.0,
             "outcome_reward": outcome_score,
@@ -289,6 +325,7 @@ class AdaptiveStateAwareRAG:
         memory_sys = GlobalBranchMemorySystem(global_max_items=8, branch_max_items=4)
         candidate_answers: List[Dict[str, Any]] = []
         retrieval_calls = 0
+        total_llm_tokens = 0
 
         for rollout_idx in range(num_rollouts):
             branch_id = f"branch_{rollout_idx+1}"
@@ -299,10 +336,12 @@ class AdaptiveStateAwareRAG:
             for depth in range(1, max_depth + 1):
                 # Decompose & Retrieve for branch
                 subq_chain = SUBQUESTION_PROMPT | llm
-                subq_resp = safe_invoke(subq_chain, {
+                subq_inp = {
                     "question": question,
                     "context": branch_memory.get_active_items()[0].content if branch_memory.get_active_items() else "Empty"
-                })
+                }
+                subq_resp = safe_invoke(subq_chain, subq_inp)
+                total_llm_tokens += extract_tokens(subq_resp, subq_inp)
                 subq_data = parse_json_safely(subq_resp)
                 target_subq = subq_data.get("subquestion") or current_subq
                 if not target_subq or not str(target_subq).strip():
@@ -318,24 +357,29 @@ class AdaptiveStateAwareRAG:
 
                 # Generate intermediate response
                 ans_chain = ANSWER_PROMPT | llm
-                ans_resp = safe_invoke(ans_chain, {
+                ans_inp = {
                     "question": target_subq,
                     "context": "\n".join([i.content for i in branch_memory.get_active_items()])
-                })
+                }
+                ans_resp = safe_invoke(ans_chain, ans_inp)
+                total_llm_tokens += extract_tokens(ans_resp, ans_inp)
                 ans_data = parse_json_safely(ans_resp)
                 sub_ans = ans_data.get("answer", str(ans_resp.content))
                 path_trace.append(f"[Step {depth}] {target_subq} => {sub_ans[:80]}")
 
                 if subq_data.get("answerable", False) or depth == max_depth:
                     fin_chain = FINALIZE_PROMPT | llm
-                    fin_resp = safe_invoke(fin_chain, {
+                    fin_inp = {
                         "question": question,
                         "context": "\n".join([i.content for i in branch_memory.get_active_items()])
-                    })
+                    }
+                    fin_resp = safe_invoke(fin_chain, fin_inp)
+                    total_llm_tokens += extract_tokens(fin_resp, fin_inp)
                     fin_data = parse_json_safely(fin_resp)
                     rollout_ans = fin_data.get("final_answer", str(fin_resp.content))
 
                     score = judge_mcts_answer(question, rollout_ans, correct_answer=ground_truth)
+                    total_llm_tokens += 120
                     candidate_answers.append({
                         "rollout": rollout_idx + 1,
                         "answer": rollout_ans,
@@ -350,10 +394,12 @@ class AdaptiveStateAwareRAG:
             f"Candidate Path {c['rollout']} (Score: {c['reward']:.2f}):\nAnswer: {c['answer']}\nLogic: {' -> '.join(c['path'])}"
             for c in candidate_answers
         ])
-        synth_resp = safe_invoke(synth_chain, {
+        synth_inp = {
             "question": question,
             "reasoning_paths": paths_summary
-        })
+        }
+        synth_resp = safe_invoke(synth_chain, synth_inp)
+        total_llm_tokens += extract_tokens(synth_resp, synth_inp)
         synth_data = parse_json_safely(synth_resp)
         final_answer = synth_data.get("synthesized_answer", candidate_answers[0]["answer"] if candidate_answers else "Formulation failed.")
 
@@ -364,8 +410,12 @@ class AdaptiveStateAwareRAG:
             "mode": "Adaptive State-Aware RAG (MCTS Complex)",
             "rollouts": num_rollouts,
             "max_tree_depth": max_depth,
+            "hops": len(candidate_answers[0]["path"]) if candidate_answers else max_depth,
             "retrieval_calls": retrieval_calls,
             "memory_facts_count": len(global_active),
+            "memory_items": len(global_active),
+            "tokens": total_llm_tokens,
+            "estimated_tokens": total_llm_tokens,
             "latency_seconds": latency,
             "avg_mcts_reward": round(sum(c["reward"] for c in candidate_answers)/len(candidate_answers), 3) if candidate_answers else 0.0
         }

@@ -377,11 +377,17 @@ def run_state_aware_socratic_rag(
         for i, f in enumerate(memory.facts)
     ]
 
+    mem_chars = sum(len(getattr(f, "fact", str(f))) + len(getattr(f, "context", "")) for f in memory.facts)
+    estimated_tokens = max(180, (mem_chars // 4) + (len(final_answer) // 4) + (len(hop_trace) * 220))
+
     metrics = {
         "mode": "State-Aware RAG (Socratic)",
         "hops": len(hop_trace),
         "retrieval_calls": retrieval_calls,
         "memory_facts_count": len(memory.facts),
+        "memory_items": len(memory.facts),
+        "tokens": estimated_tokens,
+        "estimated_tokens": estimated_tokens,
         "latency_seconds": latency,
         "avg_path_reward": round(sum(path_rewards)/len(path_rewards), 3) if path_rewards else 0.0,
         "outcome_reward": outcome_score,
@@ -620,12 +626,18 @@ def run_state_aware_mcts_rag(
         for i, f in enumerate(global_memory.facts)
     ]
 
+    mem_chars = sum(len(f.get("fact", "")) for f in global_memory.facts)
+    estimated_tokens = max(250, (mem_chars // 4) + (len(final_synthesized_answer) // 4) + (num_rollouts * max_depth * 180))
+
     metrics = {
         "mode": "State-Aware RAG (MCTS Exploration)",
         "rollouts": num_rollouts,
         "max_tree_depth": max_depth,
         "retrieval_calls": total_retrieval_calls,
         "memory_facts_count": len(global_memory.facts),
+        "memory_items": len(global_memory.facts),
+        "tokens": estimated_tokens,
+        "estimated_tokens": estimated_tokens,
         "latency_seconds": latency,
         "avg_mcts_reward": round(sum(c["reward"] for c in candidate_final_answers)/len(candidate_final_answers), 3) if candidate_final_answers else 0.0,
         "total_nodes_created": root_node.visits

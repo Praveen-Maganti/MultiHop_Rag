@@ -1,11 +1,24 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 import json
+import time
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash-lite",
     temperature=0.0,
 )
+
+def safe_invoke(chain, input_data: dict, max_retries: int = 3):
+    for attempt in range(max_retries):
+        try:
+            return chain.invoke(input_data)
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                wait_time = (attempt + 1) * 3
+                time.sleep(wait_time)
+            else:
+                raise e
+    return chain.invoke(input_data)
 
 scorer_prompt = PromptTemplate(
     template="""
@@ -31,7 +44,7 @@ def score_evidence(question: str, evidence: str, full_text: str = None) -> dict:
     # Score against full chunk text when available — short claims lose context
     text_to_score = full_text if full_text and len(full_text) > len(evidence) else evidence
     try:
-        response = chain.invoke({"question": question, "evidence": text_to_score})
+        response = safe_invoke(chain, {"question": question, "evidence": text_to_score})
         content_obj = response.content
         if isinstance(content_obj, list):
             text = "".join([p.get("text", "") if isinstance(p, dict) else str(p) for p in content_obj])
@@ -42,3 +55,4 @@ def score_evidence(question: str, evidence: str, full_text: str = None) -> dict:
     except Exception as e:
         print(f"Error in score_evidence: {e}")
         return {"relevance": 0.0, "support": 0.0, "reliability": 0.0}
+

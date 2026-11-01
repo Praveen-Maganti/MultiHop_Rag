@@ -25,6 +25,7 @@ class MemoryConfig(BaseModel):
     conflict_similarity_threshold: float = Field(default=0.72, description="Cosine similarity threshold to trigger conflict check")
     retention_threshold: float = Field(default=0.50, description="Minimum retention score to keep item in memory")
     weights: MemoryWeightsConfig = Field(default_factory=MemoryWeightsConfig)
+    dynamic_weights: bool = Field(default=True, description="Enable State-Conditioned Dynamic Weight Scheduling (Method 1)")
     auto_consolidate: bool = Field(default=True, description="Run consolidation after every reasoning step")
 
 class RetrievalConfig(BaseModel):

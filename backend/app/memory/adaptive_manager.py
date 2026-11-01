@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Tuple, Optional
 import time
 import uuid
 
-from app.core.config import get_config
+from app.core.config import get_config, MemoryWeightsConfig
 from app.core.state import (
     MemoryItem,
     MemoryStatus,
@@ -33,9 +33,26 @@ class AdaptiveMemoryManager:
         self.max_items = max_items or self.config.memory.max_items
         self.items: List[MemoryItem] = []
         self.history_log: List[MemoryUpdate] = []
+        self.total_duplicates_merged: int = 0
+        self.total_evicted_count: int = 0
 
     def get_active_items(self) -> List[MemoryItem]:
         return [i for i in self.items if i.status in [MemoryStatus.ACTIVE, MemoryStatus.VERIFIED]]
+
+    def _score_item(self, item: MemoryItem, hop: int, weights: Optional[MemoryWeightsConfig] = None) -> float:
+        """Helper that scores memory items using state-conditioned dynamic weights."""
+        total_hops = getattr(self.config.planning, "max_hops", 4)
+        active_count = len(self.get_active_items())
+        conflicts = sum(1 for i in self.items if i.contradiction_status == "DETECTED")
+        return calculate_memory_retention_score(
+            item=item,
+            current_hop=hop,
+            weights=weights,
+            total_hops=total_hops,
+            active_items_count=active_count,
+            max_items=self.max_items,
+            conflict_count=conflicts
+        )
 
     # =========================================================================
     # Core Operation 1: ADD
@@ -67,7 +84,7 @@ class AdaptiveMemoryManager:
             status=MemoryStatus.ACTIVE
         )
         # Calculate initial score
-        calculate_memory_retention_score(item, current_hop=hop)
+        self._score_item(item, hop=hop)
         self.items.append(item)
         
         self.history_log.append(MemoryUpdate(
@@ -91,7 +108,7 @@ class AdaptiveMemoryManager:
                 item.last_accessed_hop = hop
                 item.access_count += 1
                 item.updated_at = time.time()
-                calculate_memory_retention_score(item, current_hop=hop)
+                self._score_item(item, hop=hop)
                 
                 self.history_log.append(MemoryUpdate(
                     operation=MemoryOperation.UPDATE,
@@ -127,7 +144,7 @@ class AdaptiveMemoryManager:
         duplicate_item.status = MemoryStatus.DISCARDED
         duplicate_item.decision_reason = f"Merged into {primary_item.id}"
         
-        calculate_memory_retention_score(primary_item, current_hop=hop)
+        self._score_item(primary_item, hop=hop)
         
         self.history_log.append(MemoryUpdate(
             operation=MemoryOperation.MERGE,
@@ -167,7 +184,7 @@ class AdaptiveMemoryManager:
                     item.status = MemoryStatus.REJECTED
                     item.confidence = max(0.0, item.confidence - 0.40)
                 item.last_accessed_hop = hop
-                calculate_memory_retention_score(item, current_hop=hop)
+                self._score_item(item, hop=hop)
                 self.history_log.append(MemoryUpdate(
                     operation=MemoryOperation.VERIFY,
                     target_item_id=item.id,
@@ -250,7 +267,7 @@ class AdaptiveMemoryManager:
 
         # 2. Re-score all items
         for item in deduped:
-            calculate_memory_retention_score(item, current_hop=current_hop)
+            self._score_item(item, hop=current_hop)
 
         # 3. Sort by Retention Score descending
         deduped.sort(key=lambda x: x.retention_score, reverse=True)
@@ -263,6 +280,9 @@ class AdaptiveMemoryManager:
             else:
                 self.delete_item(item.id, reason="Pruned during memory compaction / capacity limit")
                 evicted_count += 1
+
+        self.total_duplicates_merged += duplicates_merged
+        self.total_evicted_count += evicted_count
 
         return {
             "active_before": len(active_items),
@@ -352,7 +372,7 @@ class AdaptiveMemoryManager:
                 "hop_added": i.hop,
                 "source_chunk_ids": i.source_chunk_ids,
                 "provenance": [p.model_dump() if hasattr(p, "model_dump") else p.dict() for p in i.provenance],
-                "decision_reason": explain_scoring_decision(i, current_hop=i.hop)
+                "decision_reason": explain_scoring_decision(i, current_hop=i.hop, total_hops=getattr(self.config.planning, "max_hops", 4))
             }
             for i in self.items
         ]

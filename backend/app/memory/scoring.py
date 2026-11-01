@@ -5,13 +5,18 @@ Implements parameterized multi-objective memory retention scoring based on Phase
 
 from app.core.config import get_config, MemoryWeightsConfig
 from app.core.state import MemoryItem, MemoryStatus
-from typing import Dict, Any
+from app.memory.dynamic_weights import get_scheduled_weights
+from typing import Dict, Any, Optional
 
 
 def calculate_memory_retention_score(
     item: MemoryItem,
     current_hop: int,
-    weights: MemoryWeightsConfig = None
+    weights: MemoryWeightsConfig = None,
+    total_hops: int = 4,
+    active_items_count: int = 1,
+    max_items: int = 6,
+    conflict_count: int = 0
 ) -> float:
     """
     Computes the multi-objective retention score:
@@ -25,8 +30,19 @@ def calculate_memory_retention_score(
           - theta * contradiction_risk
           - lambda * age_decay
     """
+    cfg = get_config()
     if weights is None:
-        weights = get_config().memory.weights
+        if getattr(cfg.memory, "dynamic_weights", True):
+            weights = get_scheduled_weights(
+                current_hop=current_hop,
+                total_hops=total_hops,
+                active_items_count=active_items_count,
+                max_items=max_items,
+                conflict_count=conflict_count,
+                base_weights=cfg.memory.weights
+            )
+        else:
+            weights = cfg.memory.weights
 
     # Verification boost or penalty
     verification_factor = 1.0 if item.verification_status == "VERIFIED" else (0.5 if item.verification_status == "UNVERIFIED" else -1.0)
@@ -54,7 +70,7 @@ def calculate_memory_retention_score(
     return item.retention_score
 
 
-def explain_scoring_decision(item: MemoryItem, current_hop: int) -> str:
+def explain_scoring_decision(item: MemoryItem, current_hop: int, total_hops: int = 4) -> str:
     """Returns a transparent human-readable explanation for the memory score."""
     reasons = []
     if item.relevance_score >= 0.7:
@@ -70,4 +86,6 @@ def explain_scoring_decision(item: MemoryItem, current_hop: int) -> str:
     age = current_hop - item.last_accessed_hop
     if age > 1:
         reasons.append(f"decayed by {age} hops")
+    if current_hop >= total_hops:
+        reasons.append("terminal hop: future utility zeroed")
     return "; ".join(reasons) if reasons else f"base score: {item.retention_score:.2f}"

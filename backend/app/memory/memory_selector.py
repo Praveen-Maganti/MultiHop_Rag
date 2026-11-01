@@ -9,8 +9,13 @@ import os
 MEMORY_REDUNDANCY_THRESHOLD = 0.85
 CONFLICT_SIMILARITY_THRESHOLD = 0.75
 
-def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, current_hop: int, metrics: dict) -> List[MemoryItem]:
-    claims = extract_claims(chunk["text"])
+def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, current_hop: int, metrics: dict,
+                  use_claim_extractor: bool = True, use_conflict: bool = True) -> List[MemoryItem]:
+    if use_claim_extractor:
+        claims = extract_claims(chunk["text"])
+    else:
+        # Ablation: use whole chunk as single claim
+        claims = [chunk["text"][:400]]
     
     chunk_embedding = chunk.get("embedding")
     if not chunk_embedding:
@@ -63,23 +68,18 @@ def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, cur
             if existing_item.embedding and claim_embedding:
                 sim = compute_cosine_similarity(claim_embedding, existing_item.embedding)
             
-            # Semantic filter before LLM
-            if sim >= CONFLICT_SIMILARITY_THRESHOLD:
+            # Semantic filter before LLM conflict check
+            if use_conflict and sim >= CONFLICT_SIMILARITY_THRESHOLD:
                 metrics["candidate_conflict_pairs"] += 1
                 metrics["conflict_llm_calls"] += 1
-                
                 conflict = detect_conflict(item.claim, existing_item.claim)
                 c_score = conflict.get("conflict_score", 0.0)
-                c_imp = conflict.get("conflict_importance", 0.0)
-                
+                c_imp   = conflict.get("conflict_importance", 0.0)
                 if c_score > 0.0:
                     item.in_conflict_with.append(existing_item.id)
                     existing_item.in_conflict_with.append(item.id)
-                    
-                    if c_score > max_conflict_score:
-                        max_conflict_score = c_score
-                    if c_imp > max_conflict_importance:
-                        max_conflict_importance = c_imp
+                    if c_score > max_conflict_score:   max_conflict_score   = c_score
+                    if c_imp   > max_conflict_importance: max_conflict_importance = c_imp
             else:
                 metrics["conflict_calls_saved"] += 1
                         
@@ -91,23 +91,19 @@ def process_chunk(chunk: Dict, question: str, current_memory: WorkingMemory, cur
         
     return items
 
-def select_evidence(chunks: List[Dict], question: str, memory: WorkingMemory, current_hop: int = 1, retention_threshold: float = 0.5, metrics: dict = None):
+def select_evidence(chunks: List[Dict], question: str, memory: WorkingMemory, current_hop: int = 1,
+                    retention_threshold: float = 0.5, metrics: dict = None,
+                    use_claim_extractor: bool = True, use_conflict: bool = True):
     if metrics is None:
-        metrics = {
-            "evidence_llm_calls": 0,
-            "total_claims": 0,
-            "possible_conflict_pairs": 0,
-            "candidate_conflict_pairs": 0,
-            "conflict_llm_calls": 0,
-            "llm_calls_saved": 0
-        }
-        
+        metrics = {"evidence_llm_calls": 0, "total_claims": 0, "possible_conflict_pairs": 0,
+                   "candidate_conflict_pairs": 0, "conflict_llm_calls": 0, "llm_calls_saved": 0}
+
     for chunk in chunks:
         if any(chunk["chunk_id"] in item.source_chunk_ids for item in memory.items):
             continue
-            
-        memory_items = process_chunk(chunk, question, memory, current_hop, metrics)
-        
+        memory_items = process_chunk(chunk, question, memory, current_hop, metrics,
+                                     use_claim_extractor=use_claim_extractor,
+                                     use_conflict=use_conflict)
         for item in memory_items:
-            if item.retention_score >= retention_threshold or item.conflict_importance > 0.5:
+            if item.retention_score >= 0.8 or item.conflict_importance > 0.5:
                 memory.add_item(item)

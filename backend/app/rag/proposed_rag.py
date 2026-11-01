@@ -42,11 +42,20 @@ OR
 )
 
 
-def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_memory_items: int = 5):
+def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_memory_items: int = 5, config: dict = None):
     from app.memory.working_memory import WorkingMemory
     from app.memory.memory_selector import select_evidence
     from app.memory.memory_compressor import compress_memory
     from app.retrieval.semantic_filter import filter_chunks
+
+    # Ablation config — all ON by default
+    if config is None:
+        config = {}
+    USE_RERANKER       = config.get("reranker",        True)
+    USE_FILTER         = config.get("filter",          True)
+    USE_CLAIM_EXTRACT  = config.get("claim_extractor", True)
+    USE_CONFLICT       = config.get("conflict",        True)
+    USE_COMPRESSOR     = config.get("compressor",      True)
 
     start_time = time.time()
 
@@ -92,11 +101,11 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
             # Fallback to single-document search
             raw_chunks = search_vector_store(document_id, current_query, top_k=10)
 
-        reranked_chunks = rerank_chunks(current_query, raw_chunks, top_k=3)
+        reranked_chunks = rerank_chunks(current_query, raw_chunks, top_k=3) if USE_RERANKER else raw_chunks[:3]
 
         # 2. SEMANTIC FILTER
         metrics_dict["input_chunks"] += len(reranked_chunks)
-        new_chunks = filter_chunks(current_query, reranked_chunks)
+        new_chunks = filter_chunks(current_query, reranked_chunks) if USE_FILTER else reranked_chunks
 
         print(f"\n=== HOP {hop + 1} ===")
         print(f"Query: {current_query}")
@@ -123,7 +132,9 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
             break
 
         # 4. SELECT EVIDENCE → MEMORY
-        select_evidence(new_chunks, current_query, memory, current_hop=hop + 1, metrics=metrics_dict)
+        select_evidence(new_chunks, current_query, memory, current_hop=hop + 1,
+                        metrics=metrics_dict, use_claim_extractor=USE_CLAIM_EXTRACT,
+                        use_conflict=USE_CONFLICT)
 
         # Re-score ALL existing active items with updated age penalty each hop
         active_items = [i for i in memory.items if i.status in ["ACTIVE", "VERIFIED"]]
@@ -155,7 +166,7 @@ def run_proposed_rag(document_id: str, question: str, max_hops: int = 3, max_mem
             "remaining_hops": max_hops - hop
         }
 
-        compression_metrics = compress_memory(memory, reasoning_state, max_memory_items)
+        compression_metrics = compress_memory(memory, reasoning_state, max_memory_items) if USE_COMPRESSOR else {"duplicates_removed": 0, "claims_merged": 0, "low_utility_removed": 0, "compression_ratio": "0%", "before_compression": len([i for i in memory.items if i.status in ["ACTIVE","VERIFIED"]]), "after_compression": len([i for i in memory.items if i.status in ["ACTIVE","VERIFIED"]])}
         trace.record_compression(compression_metrics)
 
         if "compression_ratio" in compression_metrics:

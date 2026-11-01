@@ -30,7 +30,13 @@ GOOGLE_API_KEY=your_gemini_api_key_here
 ### 2. Start the Backend API (FastAPI)
 ```powershell
 cd backend
+.\.venv\Scripts\activate
 uvicorn app.main:app --reload --port 8000
+```
+Or directly using the helper script:
+```powershell
+cd backend
+.\run.ps1
 ```
 
 ### 3. Start the Frontend (React + Vite)

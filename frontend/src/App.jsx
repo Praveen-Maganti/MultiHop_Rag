@@ -3,10 +3,12 @@ import UploadPanel from './UploadPanel';
 import ChatInterface from './ChatInterface';
 import ComparisonView from './ComparisonView';
 import MetricsPanel from './MetricsPanel';
+import AblationPanel from './AblationPanel';
 import './index.css';
 
 function App() {
   // List of uploaded files: [{document_id, filename, chunks_created}]
+  const [activeMode, setActiveMode] = useState('chat'); // 'chat' | 'ablation'
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -99,17 +101,49 @@ function App() {
         onRemove={handleRemove}
       />
 
+      {/* Mode switcher */}
       {uploadedFiles.length > 0 && (
-        <ChatInterface onAsk={handleAsk} />
-      )}
-
-      {loading && (
-        <div style={{ textAlign: 'center', margin: '2rem', color: 'var(--accent-color)' }}>
-          Executing reasoning pipeline with dynamic working memory across {uploadedFiles.length} document{uploadedFiles.length !== 1 ? 's' : ''}...
+        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+          <button
+            onClick={() => setActiveMode('chat')}
+            style={{
+              background: activeMode === 'chat' ? 'rgba(88,166,255,0.2)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${activeMode === 'chat' ? 'var(--accent-color)' : 'rgba(255,255,255,0.15)'}`,
+              borderRadius: '8px', color: activeMode === 'chat' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              padding: '0.5rem 1.5rem', cursor: 'pointer', fontSize: '0.95rem', fontWeight: 600,
+            }}
+          >
+            Chat Comparison
+          </button>
+          <button
+            onClick={() => setActiveMode('ablation')}
+            style={{
+              background: activeMode === 'ablation' ? 'rgba(88,166,255,0.2)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${activeMode === 'ablation' ? 'var(--accent-color)' : 'rgba(255,255,255,0.15)'}`,
+              borderRadius: '8px', color: activeMode === 'ablation' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              padding: '0.5rem 1.5rem', cursor: 'pointer', fontSize: '0.95rem', fontWeight: 600,
+            }}
+          >
+            Ablation Study
+          </button>
         </div>
       )}
 
-      {!loading && results && (
+      {activeMode === 'chat' && uploadedFiles.length > 0 && (
+        <ChatInterface onAsk={handleAsk} />
+      )}
+
+      {activeMode === 'ablation' && uploadedFiles.length > 0 && (
+        <AblationPanel uploadedFiles={uploadedFiles} />
+      )}
+
+      {activeMode === 'chat' && loading && (
+        <div style={{ textAlign: 'center', margin: '2rem', color: 'var(--accent-color)' }}>
+          Running Multi-Hop RAG &amp; Proposed RAG across {uploadedFiles.length} document{uploadedFiles.length !== 1 ? 's' : ''}...
+        </div>
+      )}
+
+      {activeMode === 'chat' && !loading && results && (
         <>
           <ComparisonView results={results} mode={currentMode} />
           <MetricsPanel results={results} />
