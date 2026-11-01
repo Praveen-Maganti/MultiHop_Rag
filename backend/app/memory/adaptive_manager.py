@@ -356,6 +356,16 @@ class AdaptiveMemoryManager:
 
         return new_items
 
+    def clone(self) -> "AdaptiveMemoryManager":
+        """Create an isolated deep copy of the memory manager for MCTS branching."""
+        cloned = AdaptiveMemoryManager(max_items=self.max_items)
+        for item in self.items:
+            copied_item = item.model_copy(deep=True) if hasattr(item, "model_copy") else item.copy(deep=True)
+            cloned.items.append(copied_item)
+        cloned.total_duplicates_merged = self.total_duplicates_merged
+        cloned.total_evicted_count = self.total_evicted_count
+        return cloned
+
     def to_dict_list(self) -> List[Dict[str, Any]]:
         return [
             {
