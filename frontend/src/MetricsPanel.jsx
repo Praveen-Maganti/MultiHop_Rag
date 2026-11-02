@@ -55,6 +55,24 @@ const MetricsPanel = ({ results }) => {
             {diffCell(mh.evaluation?.f1, pr.evaluation?.f1)}
           </tr>
           <tr>
+            <td>Exact Match (EM)</td>
+            <td>{fmt(mh.evaluation?.exact_match)}</td>
+            <td>{fmt(pr.evaluation?.exact_match)}</td>
+            {diffCell(mh.evaluation?.exact_match, pr.evaluation?.exact_match)}
+          </tr>
+          <tr>
+            <td>BERTScore (F1)</td>
+            <td>{fmt(mh.evaluation?.bertscore)}</td>
+            <td>{fmt(pr.evaluation?.bertscore)}</td>
+            {diffCell(mh.evaluation?.bertscore, pr.evaluation?.bertscore)}
+          </tr>
+          <tr>
+            <td>Dual Reward ↑</td>
+            <td>{fmt(mh.evaluation?.dual_reward)}</td>
+            <td>{fmt(pr.evaluation?.dual_reward)}</td>
+            {diffCell(mh.evaluation?.dual_reward, pr.evaluation?.dual_reward)}
+          </tr>
+          <tr>
             <td>Evidence Coverage</td>
             <td>{fmt(mh.evaluation?.coverage)}</td>
             <td>{fmt(pr.evaluation?.coverage)}</td>

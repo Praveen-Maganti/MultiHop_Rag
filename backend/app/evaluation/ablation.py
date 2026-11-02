@@ -354,6 +354,168 @@ def _run_variant_i(document_id: str, question: str, ground_truth: str = None) ->
 
 
 # =============================================================================
+# Variant K: Full System with STATIC weights (dynamic_weights=False)
+# Ablates Novel Contribution 1 — State-Conditioned Dynamic Weight Scheduling
+# Identical to J but DynamicMemoryWeightsScheduler is bypassed; base weights
+# remain constant across all hops (no temporal/load/conflict adaptation).
+# Expected: lower F1/BERTScore than J, proving dynamic scheduling adds value.
+# =============================================================================
+def _run_variant_k(document_id: str, question: str, ground_truth: str = None) -> Dict[str, Any]:
+    """Full System with Static Memory Weights (Dynamic Weight Scheduling disabled)."""
+    from app.core.config import get_config
+    cfg = get_config()
+    original_flag = cfg.memory.dynamic_weights
+    # Disable dynamic weight scheduling for this run
+    cfg.memory.dynamic_weights = False
+    try:
+        result = run_adaptive_state_aware_rag(
+            document_id=document_id,
+            question=question,
+            ground_truth=ground_truth,
+            mode="adaptive"
+        )
+    finally:
+        # Always restore original flag
+        cfg.memory.dynamic_weights = original_flag
+    result["metrics"]["mode"] = "Full System - Static Weights (No Dynamic Scheduling)"
+    return result
+
+
+# =============================================================================
+# Variant L: MCTS with Shared Branch Memory (no clone isolation)
+# Ablates Novel Contribution 2 — Branch-Local Memory Isolation
+# All MCTS branches share a single AdaptiveMemoryManager instead of cloned
+# branch-local copies. Cross-branch contamination is allowed.
+# Expected: lower F1/BERTScore than I/J, proving branch isolation adds value.
+# =============================================================================
+def _run_variant_l(document_id: str, question: str, ground_truth: str = None) -> Dict[str, Any]:
+    """MCTS with Shared Branch Memory — no clone() isolation between branches."""
+    import time as _t
+    import math
+    import uuid
+    from app.rag.adaptive_rag import AdaptiveStateAwareRAG, MCTSNode, safe_invoke, parse_json_safely, extract_tokens
+    from app.core.state import ActionType
+    from app.memory.adaptive_manager import AdaptiveMemoryManager
+    from app.rag.state_aware_prompts import FINALIZE_PROMPT, SYNTHESIZE_FINAL_ANSWER_PROMPT
+    from app.evaluation.dual_reward import judge_mcts_answer
+
+    start_time = _t.time()
+    engine = AdaptiveStateAwareRAG()
+    cfg = engine.config
+    uct_c = getattr(cfg.planning, "mcts_uct_c", 1.0)
+    max_depth = cfg.planning.mcts_max_depth
+    num_rollouts = cfg.planning.mcts_num_rollouts
+
+    # KEY DIFFERENCE: single shared memory — no branch isolation
+    shared_memory = AdaptiveMemoryManager(max_items=8)
+
+    root = MCTSNode(
+        question=question,
+        action=ActionType.A1_DECOMPOSE_AND_ANSWER,
+        depth=0,
+        parent=None,
+        subanswer="Root query initialized.",
+        branch_memory=shared_memory,  # all branches share this same object
+        rationale="Root — shared memory (no isolation)",
+        is_terminal=False
+    )
+
+    candidate_answers = []
+    retrieval_calls = 0
+    total_llm_tokens = 0
+    total_tree_nodes = 1
+
+    for rollout_idx in range(num_rollouts):
+        # Selection
+        curr_node = root
+        while curr_node.children and not curr_node.is_terminal and curr_node.depth < max_depth:
+            curr_node = max(curr_node.children, key=lambda c: c.uct_score(c_param=uct_c))
+
+        # Expansion — pass shared_memory directly (no clone)
+        if not curr_node.is_terminal and curr_node.depth < max_depth:
+            actions = [ActionType.A1_DECOMPOSE_AND_ANSWER, ActionType.A5_CONCLUDE] \
+                if curr_node.depth >= 1 else [ActionType.A1_DECOMPOSE_AND_ANSWER, ActionType.A4_REDIRECT]
+
+            expanded = []
+            for act in actions:
+                # Temporarily swap branch_memory to shared (override clone inside _expand_action)
+                curr_node.branch_memory = shared_memory
+                child, ret, tok = engine._expand_action(
+                    action=act,
+                    parent=curr_node,
+                    root_question=question,
+                    document_id=document_id
+                )
+                # Force child to also use shared memory (no isolation)
+                child.branch_memory = shared_memory
+                retrieval_calls += ret
+                total_llm_tokens += tok
+                total_tree_nodes += 1
+                curr_node.children.append(child)
+                expanded.append(child)
+            rollout_target = expanded[0] if expanded else curr_node
+        else:
+            rollout_target = curr_node
+
+        # Simulation
+        sim_context = "\n".join([i.content for i in shared_memory.get_active_items()])
+        fin_chain = FINALIZE_PROMPT | engine.retriever.__class__.__module__  # use engine's llm
+        from langchain_google_genai import ChatGoogleGenerativeAI as _LLM
+        _llm = _LLM(model="gemini-3.5-flash-lite", temperature=0.0, max_output_tokens=512)
+        fin_resp = safe_invoke(FINALIZE_PROMPT | _llm, {
+            "question": question,
+            "context": sim_context or "No context accumulated."
+        })
+        total_llm_tokens += extract_tokens(fin_resp)
+        fin_data = parse_json_safely(fin_resp)
+        rollout_answer = fin_data.get("final_answer", str(fin_resp.content))
+        rollout_target.rollout_answer = rollout_answer
+
+        reward_score = judge_mcts_answer(
+            user_question=question,
+            system_answer=rollout_answer,
+            correct_answer=ground_truth
+        )
+        total_llm_tokens += 120
+
+        candidate_answers.append({
+            "rollout": rollout_idx + 1,
+            "answer": rollout_answer,
+            "reward": reward_score,
+            "path": rollout_target.get_path_string()
+        })
+
+        # Backpropagation
+        node = rollout_target
+        while node is not None:
+            node.visits += 1
+            node.total_reward += reward_score
+            node = node.parent
+
+    candidate_answers.sort(key=lambda x: x["reward"], reverse=True)
+    final_answer = candidate_answers[0]["answer"] if candidate_answers else "Formulation failed."
+    latency = round(_t.time() - start_time, 2)
+    active = shared_memory.get_active_items()
+
+    return {
+        "answer": final_answer,
+        "memory": shared_memory.to_dict_list(),
+        "hop_trace": [c["path"] for c in candidate_answers],
+        "metrics": {
+            "mode": "MCTS - Shared Branch Memory (No Isolation)",
+            "rollouts": num_rollouts,
+            "hops": len(candidate_answers),
+            "retrieval_calls": retrieval_calls,
+            "memory_items": len(active),
+            "tokens": total_llm_tokens,
+            "estimated_tokens": total_llm_tokens,
+            "latency_seconds": latency,
+            "cumulative_dual_reward": round(candidate_answers[0]["reward"] * 3.0, 4) if candidate_answers else 0.0
+        }
+    }
+
+
+# =============================================================================
 # Main Ablation Framework
 # =============================================================================
 class AblationFramework:
@@ -375,6 +537,8 @@ class AblationFramework:
         "H_memory_contradiction":       "H. Adaptive Memory + Contradiction Resolution",
         "I_adaptive_mcts":              "I. Adaptive Memory + MCTS Tree Search",
         "J_full_system":                "J. Full Adaptive State-Aware RAG (Master)",
+        "K_static_weights":             "K. Full System - Static Weights (Ablates Contribution 1)",
+        "L_shared_branch_memory":       "L. MCTS - Shared Branch Memory (Ablates Contribution 2)",
     }
 
     def _record(self, variant_key: str, res: dict, eval_res: dict, t0: float) -> dict:
@@ -482,6 +646,22 @@ class AblationFramework:
             results["J_full_system"] = self._record("J_full_system", res, evaluate_result(res, ground_truth), t0)
         except Exception as e:
             results["J_full_system"] = {"error": str(e)}
+
+        # ── K: Static Weights (Ablates Novel Contribution 1) ─────────────────
+        t0 = _time.time()
+        try:
+            res = _run_variant_k(document_id, question, ground_truth=ground_truth)
+            results["K_static_weights"] = self._record("K_static_weights", res, evaluate_result(res, ground_truth), t0)
+        except Exception as e:
+            results["K_static_weights"] = {"error": str(e)}
+
+        # ── L: Shared Branch Memory (Ablates Novel Contribution 2) ────────────
+        t0 = _time.time()
+        try:
+            res = _run_variant_l(document_id, question, ground_truth=ground_truth)
+            results["L_shared_branch_memory"] = self._record("L_shared_branch_memory", res, evaluate_result(res, ground_truth), t0)
+        except Exception as e:
+            results["L_shared_branch_memory"] = {"error": str(e)}
 
         return {
             "question":        question,

@@ -33,8 +33,11 @@ async def chat(request: ChatRequest):
         mh_eval = evaluate_result(mh_adapter, ground_truth)
         multihop_results["evaluation"] = {
             "f1": mh_eval.get("f1", 0.0),
+            "exact_match": mh_eval.get("exact_match", 0.0),
+            "bertscore": mh_eval.get("bertscore", 0.0),
             "coverage": mh_eval.get("evidence_coverage", 0.0),
-            "unsupported": mh_eval.get("unsupported_claim_ratio", 0.0)
+            "unsupported": mh_eval.get("unsupported_claim_ratio", 0.0),
+            "dual_reward": mh_eval.get("cumulative_dual_reward", 0.0)
         }
 
         # 2. Selected Mode Execution
@@ -60,8 +63,11 @@ async def chat(request: ChatRequest):
         selected_eval = evaluate_result(eval_adapter, ground_truth)
         state_aware_results["evaluation"] = {
             "f1": selected_eval.get("f1", 0.0),
+            "exact_match": selected_eval.get("exact_match", 0.0),
+            "bertscore": selected_eval.get("bertscore", 0.0),
             "coverage": selected_eval.get("evidence_coverage", 0.0),
-            "unsupported": selected_eval.get("unsupported_claim_ratio", 0.0)
+            "unsupported": selected_eval.get("unsupported_claim_ratio", 0.0),
+            "dual_reward": selected_eval.get("cumulative_dual_reward", 0.0)
         }
 
         # Ensure tokens and estimated_tokens are populated for UI metrics table
