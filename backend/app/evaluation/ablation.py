@@ -459,7 +459,6 @@ def _run_variant_l(document_id: str, question: str, ground_truth: str = None) ->
 
         # Simulation
         sim_context = "\n".join([i.content for i in shared_memory.get_active_items()])
-        fin_chain = FINALIZE_PROMPT | engine.retriever.__class__.__module__  # use engine's llm
         from langchain_google_genai import ChatGoogleGenerativeAI as _LLM
         _llm = _LLM(model="gemini-3.5-flash-lite", temperature=0.0, max_output_tokens=512)
         fin_resp = safe_invoke(FINALIZE_PROMPT | _llm, {

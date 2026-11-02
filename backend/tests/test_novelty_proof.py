@@ -11,7 +11,17 @@ What this proves:
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# torchvision guard — must come before any transformers/bert_score import
+if "torchvision" not in sys.modules:
+    sys.modules["torchvision"] = None
+
+# Add backend dir to path and load .env BEFORE any app imports (provides GOOGLE_API_KEY)
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, BACKEND_DIR)
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
 from app.retrieval.vector_store import initialize_vector_store
 from app.evaluation.ablation import AblationFramework
@@ -105,27 +115,27 @@ print(f"{'='*65}")
 # Contribution 3: G > B
 c3_proven = results["G"]["f1"] > results["B"]["f1"]
 delta_c3  = results["G"]["f1"] - results["B"]["f1"]
-print(f"\n  Contribution 3 — 11-Operation Memory Lifecycle")
-print(f"    G (F1={results['G']['f1']:.3f}) vs B (F1={results['B']['f1']:.3f})  Δ={delta_c3:+.3f}")
-print(f"    {'✅ PROVEN' if c3_proven else '❌ NOT proven on this sample'}")
+print(f"\n  Contribution 3 -- 11-Operation Memory Lifecycle")
+print(f"    G (F1={results['G']['f1']:.3f}) vs B (F1={results['B']['f1']:.3f})  Delta={delta_c3:+.3f}")
+print(f"    {'PROVEN' if c3_proven else 'NOT proven on this sample'}")
 
 # Contribution 2: I > L
 c2_proven = results["I"]["f1"] > results["L"]["f1"]
 delta_c2  = results["I"]["f1"] - results["L"]["f1"]
-print(f"\n  Contribution 2 — Branch-Local Memory Isolation in MCTS")
-print(f"    I (F1={results['I']['f1']:.3f}) vs L (F1={results['L']['f1']:.3f})  Δ={delta_c2:+.3f}")
-print(f"    {'✅ PROVEN' if c2_proven else '❌ NOT proven on this sample'}")
+print(f"\n  Contribution 2 -- Branch-Local Memory Isolation in MCTS")
+print(f"    I (F1={results['I']['f1']:.3f}) vs L (F1={results['L']['f1']:.3f})  Delta={delta_c2:+.3f}")
+print(f"    {'PROVEN' if c2_proven else 'NOT proven on this sample'}")
 
 # Contribution 1: J > K
 c1_proven = results["J"]["f1"] > results["K"]["f1"]
 delta_c1  = results["J"]["f1"] - results["K"]["f1"]
-print(f"\n  Contribution 1 — State-Conditioned Dynamic Weight Scheduling")
-print(f"    J (F1={results['J']['f1']:.3f}) vs K (F1={results['K']['f1']:.3f})  Δ={delta_c1:+.3f}")
-print(f"    {'✅ PROVEN' if c1_proven else '❌ NOT proven on this sample'}")
+print(f"\n  Contribution 1 -- State-Conditioned Dynamic Weight Scheduling")
+print(f"    J (F1={results['J']['f1']:.3f}) vs K (F1={results['K']['f1']:.3f})  Delta={delta_c1:+.3f}")
+print(f"    {'PROVEN' if c1_proven else 'NOT proven on this sample'}")
 
 proven_count = sum([c1_proven, c2_proven, c3_proven])
 print(f"\n  Overall: {proven_count}/3 contributions proven on this sample")
-print(f"  {'✅ Ready for full HotpotQA benchmark run' if proven_count >= 2 else '⚠️  Re-check implementation before full benchmark'}")
+print(f"  {'Ready for full HotpotQA benchmark run' if proven_count >= 2 else 'Re-check implementation before full benchmark'}")
 print(f"\n{'='*65}")
 print("  ANSWERS")
 print(f"{'='*65}")
