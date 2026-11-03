@@ -216,7 +216,7 @@ class AdaptiveStateAwareRAG:
         document_id: str,
         question: str,
         ground_truth: str = None,
-        max_hops: int = 4
+        max_hops: int = 5
     ) -> Dict[str, Any]:
         start_time = time.time()
         logger = TrajectoryLogger(question)
@@ -840,14 +840,15 @@ class AdaptiveStateAwareRAG:
         document_id: str,
         question: str,
         ground_truth: str = None,
-        mode: str = "adaptive"
+        mode: str = "adaptive",
+        max_hops: int = 5
     ) -> Dict[str, Any]:
         mode = mode.lower() if mode else "adaptive"
 
         if mode == "socratic":
-            return self.run_socratic(document_id, question, ground_truth=ground_truth)
+            return self.run_socratic(document_id, question, ground_truth=ground_truth, max_hops=max_hops)
         elif mode == "mcts":
-            return self.run_mcts(document_id, question, ground_truth=ground_truth)
+            return self.run_mcts(document_id, question, ground_truth=ground_truth, max_depth=max_hops)
         else:
             # Adaptive Auto-Routing based on Question Complexity
             is_multihop, estimated_hops, _ = self.decomposer.decompose(question)
@@ -868,6 +869,7 @@ def run_adaptive_state_aware_rag(
     document_id: str,
     question: str,
     ground_truth: str = None,
-    mode: str = "adaptive"
+    mode: str = "adaptive",
+    max_hops: int = 5
 ) -> Dict[str, Any]:
-    return adaptive_rag_engine.execute(document_id, question, ground_truth=ground_truth, mode=mode)
+    return adaptive_rag_engine.execute(document_id, question, ground_truth=ground_truth, mode=mode, max_hops=max_hops)

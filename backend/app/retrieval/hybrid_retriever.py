@@ -47,13 +47,13 @@ class HybridRetriever:
         self.config = get_config().retrieval
 
     def lexical_search(self, query: str, document_id: Optional[str] = None, top_k: int = 8) -> List[Dict[str, Any]]:
-        """Performs lexical BM25 ranking over indexed chunks in vector_db (filtered by document_id if provided)."""
+        """Performs lexical BM25 ranking over indexed chunks in vector_db (filtered by document_id only if single document exists)."""
         if not vector_db:
             return []
 
         all_chunks = []
         for doc_id, store in vector_db.items():
-            if document_id and doc_id != document_id:
+            if document_id and doc_id != document_id and len(vector_db) <= 1:
                 continue
             for c in store.get("chunks", []):
                 copy_c = dict(c)
@@ -89,9 +89,9 @@ class HybridRetriever:
         return scored[:top_k]
 
     def dense_search(self, query: str, document_id: Optional[str] = None, top_k: int = 8) -> List[Dict[str, Any]]:
-        """Dense FAISS retrieval."""
+        """Dense FAISS retrieval across all documents or filtered to document_id."""
         try:
-            if document_id and document_id in vector_db:
+            if document_id and document_id in vector_db and len(vector_db) <= 1:
                 results = search_vector_store(document_id, query, top_k=top_k)
             else:
                 results = search_all_documents(query, top_k=top_k)
