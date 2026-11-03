@@ -47,24 +47,44 @@ def calculate_memory_retention_score(
     # Verification boost or penalty
     verification_factor = 1.0 if item.verification_status == "VERIFIED" else (0.5 if item.verification_status == "UNVERIFIED" else -1.0)
     conflict_risk = 1.0 if item.contradiction_status == "DETECTED" else 0.0
-    age_decay = max(0, current_hop - item.last_accessed_hop) * weights.lambda_age_cost
+
+    pos_sum = (
+        weights.alpha_relevance +
+        weights.beta_reliability +
+        weights.gamma_novelty +
+        weights.delta_future_utility +
+        weights.epsilon_evidence_strength +
+        weights.zeta_verification
+    )
+    norm_factor = pos_sum if pos_sum > 1.05 else 1.0
+    w_alpha = weights.alpha_relevance / norm_factor
+    w_beta = weights.beta_reliability / norm_factor
+    w_gamma = weights.gamma_novelty / norm_factor
+    w_delta = weights.delta_future_utility / norm_factor
+    w_epsilon = weights.epsilon_evidence_strength / norm_factor
+    w_zeta = weights.zeta_verification / norm_factor
+
+    w_eta = min(0.5, weights.eta_redundancy_penalty / norm_factor if norm_factor > 1.0 else weights.eta_redundancy_penalty)
+    w_theta = min(0.8, weights.theta_conflict_penalty / norm_factor if norm_factor > 1.0 else weights.theta_conflict_penalty)
+    w_lambda = min(0.3, weights.lambda_age_cost)
+    age_decay = max(0, current_hop - item.last_accessed_hop) * w_lambda
 
     positive_score = (
-        weights.alpha_relevance * item.relevance_score +
-        weights.beta_reliability * item.reliability +
-        weights.gamma_novelty * item.novelty_score +
-        weights.delta_future_utility * item.future_utility_score +
-        weights.epsilon_evidence_strength * item.evidence_strength +
-        weights.zeta_verification * (item.confidence * verification_factor)
+        w_alpha * item.relevance_score +
+        w_beta * item.reliability +
+        w_gamma * item.novelty_score +
+        w_delta * item.future_utility_score +
+        w_epsilon * item.evidence_strength +
+        w_zeta * (item.confidence * verification_factor)
     )
 
     penalty = (
-        weights.eta_redundancy_penalty * item.redundancy_score +
-        weights.theta_conflict_penalty * conflict_risk +
+        w_eta * item.redundancy_score +
+        w_theta * conflict_risk +
         age_decay
     )
 
-    score = max(0.0, positive_score - penalty)
+    score = max(0.0, min(1.0, positive_score - penalty))
     item.retention_score = round(score, 4)
     item.importance_score = round(score, 4)
     return item.retention_score

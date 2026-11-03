@@ -4,9 +4,10 @@ Acts as the central cognitive controller between retrieval, reasoning, and refle
 Implements the 11 core dynamic memory operations defined in Phase 3, 14, and 15.
 """
 
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 import time
 import uuid
+import re
 
 from app.core.config import get_config, MemoryWeightsConfig
 from app.core.state import (
@@ -22,6 +23,46 @@ from app.utils.embeddings import get_cached_embedding, compute_cosine_similarity
 from app.memory.evidence_scorer import score_evidence
 from app.memory.conflict_detector import detect_conflict
 
+_CONFLICT_CACHE: Dict[Tuple[str, str], Dict[str, float]] = {}
+
+
+def extract_numerical_entities(text: str) -> List[str]:
+    """
+    Extracts numerical quantities, monetary amounts, years, percentages, and metrics.
+    Examples: $100B, 110B, 2023, 45%, 12.5 km, 300 million
+    """
+    pattern = r'\$?\b\d+(?:[\.,]\d+)?\s*(?:billion|million|trillion|percent|%|[BKMbkm])?\b'
+    matches = re.findall(pattern, text, flags=re.IGNORECASE)
+    return [m.strip().lower() for m in matches if m.strip()]
+
+
+def has_conflicting_values(text1: str, text2: str) -> bool:
+    """
+    Checks if text1 and text2 contain conflicting numerical entities / values.
+    If both contain numbers and the sets of numbers are not identical,
+    they should NOT be merged (e.g., $100B in 2023 vs $110B in 2023).
+    """
+    vals1 = set(extract_numerical_entities(text1))
+    vals2 = set(extract_numerical_entities(text2))
+    if vals1 and vals2:
+        diff = vals1.symmetric_difference(vals2)
+        if diff:
+            return True
+    return False
+
+
+def cached_detect_conflict(text1: str, text2: str) -> Dict[str, float]:
+    """Caches detect_conflict results to prevent redundant LLM invocations."""
+    key = tuple(sorted([text1.strip(), text2.strip()]))
+    if key in _CONFLICT_CACHE:
+        return _CONFLICT_CACHE[key]
+    try:
+        res = detect_conflict(text1, text2)
+    except Exception:
+        res = {"conflict_score": 0.0, "conflict_importance": 0.0}
+    _CONFLICT_CACHE[key] = res
+    return res
+
 
 class AdaptiveMemoryManager:
     """
@@ -33,17 +74,23 @@ class AdaptiveMemoryManager:
         self.max_items = max_items or self.config.memory.max_items
         self.items: List[MemoryItem] = []
         self.history_log: List[MemoryUpdate] = []
+        self.conflict_pairs: Set[Tuple[str, str]] = set()
         self.total_duplicates_merged: int = 0
         self.total_evicted_count: int = 0
 
     def get_active_items(self) -> List[MemoryItem]:
         return [i for i in self.items if i.status in [MemoryStatus.ACTIVE, MemoryStatus.VERIFIED]]
 
+    def get_conflict_pairs_count(self) -> int:
+        """Returns the number of conflicting pairs among active memory items."""
+        active_ids = {i.id for i in self.get_active_items()}
+        return sum(1 for (a, b) in self.conflict_pairs if a in active_ids and b in active_ids)
+
     def _score_item(self, item: MemoryItem, hop: int, weights: Optional[MemoryWeightsConfig] = None) -> float:
         """Helper that scores memory items using state-conditioned dynamic weights."""
         total_hops = getattr(self.config.planning, "max_hops", 4)
         active_count = len(self.get_active_items())
-        conflicts = sum(1 for i in self.items if i.contradiction_status == "DETECTED")
+        conflict_pairs_count = self.get_conflict_pairs_count()
         return calculate_memory_retention_score(
             item=item,
             current_hop=hop,
@@ -51,7 +98,7 @@ class AdaptiveMemoryManager:
             total_hops=total_hops,
             active_items_count=active_count,
             max_items=self.max_items,
-            conflict_count=conflicts
+            conflict_count=conflict_pairs_count
         )
 
     # =========================================================================
@@ -198,6 +245,8 @@ class AdaptiveMemoryManager:
     def handle_contradiction(self, item_a: MemoryItem, item_b: MemoryItem, hop: int):
         item_a.contradiction_status = "DETECTED"
         item_b.contradiction_status = "DETECTED"
+        pair = tuple(sorted([item_a.id, item_b.id]))
+        self.conflict_pairs.add(pair)
         if item_b.id not in item_a.conflicting_item_ids:
             item_a.conflicting_item_ids.append(item_b.id)
         if item_a.id not in item_b.conflicting_item_ids:
@@ -228,8 +277,8 @@ class AdaptiveMemoryManager:
     def consolidate_memory(self, current_hop: int, main_question: str) -> Dict[str, Any]:
         """
         Executes full consolidation:
-        1. Semantic Deduplication & Merging
-        2. Pairwise Contradiction Check
+        1. Semantic Deduplication & Merging (guarded against conflicting numerical values)
+        2. Pairwise Contradiction Check (un-gated by similarity pre-filter)
         3. Multi-objective Re-scoring with Age Decay
         4. Strict pruning to max_items
         """
@@ -238,7 +287,7 @@ class AdaptiveMemoryManager:
         conflicts_checked = 0
         evicted_count = 0
 
-        # 1. Semantic Deduplication & Merging
+        # 1. Semantic Deduplication & Merging (Value-conflict aware)
         deduped: List[MemoryItem] = []
         for item in active_items:
             is_dup = False
@@ -250,29 +299,50 @@ class AdaptiveMemoryManager:
                 existing.embedding = exist_emb
                 sim = compute_cosine_similarity(item_emb, exist_emb)
                 
+                # Check value conflict: if numerical/entity values differ, never blindly merge
+                has_val_conflict = has_conflicting_values(item.content, existing.content)
+
                 if sim >= self.config.memory.redundancy_threshold:
-                    self.merge_items(existing, item, current_hop)
-                    duplicates_merged += 1
-                    is_dup = True
-                    break
-                elif sim >= self.config.memory.conflict_similarity_threshold:
-                    # Potential conflict candidate
-                    conflicts_checked += 1
-                    c_res = detect_conflict(item.content, existing.content)
-                    if c_res.get("conflict_score", 0.0) >= 0.6:
-                        self.handle_contradiction(item, existing, current_hop)
+                    if has_val_conflict:
+                        # High similarity but conflicting numbers/facts (e.g. $100B vs $110B)
+                        conflicts_checked += 1
+                        c_res = cached_detect_conflict(item.content, existing.content)
+                        if c_res.get("conflict_score", 0.0) >= 0.4 or has_val_conflict:
+                            self.handle_contradiction(item, existing, current_hop)
+                    else:
+                        self.merge_items(existing, item, current_hop)
+                        duplicates_merged += 1
+                        is_dup = True
+                        break
 
             if not is_dup and item.status in [MemoryStatus.ACTIVE, MemoryStatus.VERIFIED]:
                 deduped.append(item)
 
-        # 2. Re-score all items
+        # 2. Pairwise Contradiction Check (Cosine similarity pre-filter removed)
+        # Directly evaluate candidate pairs for factual contradictions
+        for i in range(len(deduped)):
+            for j in range(i + 1, len(deduped)):
+                item_a = deduped[i]
+                item_b = deduped[j]
+                if item_b.id in item_a.conflicting_item_ids:
+                    continue
+                # Evaluate when claims share key entities/words or have differing values
+                words_a = set(re.findall(r'\b\w{4,}\b', item_a.content.lower()))
+                words_b = set(re.findall(r'\b\w{4,}\b', item_b.content.lower()))
+                if (words_a & words_b) or has_conflicting_values(item_a.content, item_b.content):
+                    conflicts_checked += 1
+                    c_res = cached_detect_conflict(item_a.content, item_b.content)
+                    if c_res.get("conflict_score", 0.0) >= 0.5:
+                        self.handle_contradiction(item_a, item_b, current_hop)
+
+        # 3. Re-score all items
         for item in deduped:
             self._score_item(item, hop=current_hop)
 
-        # 3. Sort by Retention Score descending
+        # 4. Sort by Retention Score descending
         deduped.sort(key=lambda x: x.retention_score, reverse=True)
 
-        # 4. Enforce max_items limit
+        # 5. Enforce max_items limit
         final_kept: List[MemoryItem] = []
         for idx, item in enumerate(deduped):
             if idx < self.max_items and item.retention_score >= self.config.memory.retention_threshold:
@@ -362,6 +432,7 @@ class AdaptiveMemoryManager:
         for item in self.items:
             copied_item = item.model_copy(deep=True) if hasattr(item, "model_copy") else item.copy(deep=True)
             cloned.items.append(copied_item)
+        cloned.conflict_pairs = set(self.conflict_pairs)
         cloned.total_duplicates_merged = self.total_duplicates_merged
         cloned.total_evicted_count = self.total_evicted_count
         return cloned

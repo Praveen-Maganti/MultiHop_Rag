@@ -64,7 +64,7 @@ class TestEndToEndMultiHopRAG(unittest.TestCase):
         self.assertIn(res["metrics"]["stop_reason"], ["sufficient_evidence", "concluded", "max_steps_reached"])
 
     def test_02_ablation_sample_run(self):
-        """Test that the 10-variant ablation runner executes cleanly."""
+        """Test that the 12-variant ablation runner executes cleanly."""
         ablation = AblationFramework()
         question = "Which company sponsors Project Alpha and in what city is it headquartered?"
         res = ablation.run_ablation_sample(

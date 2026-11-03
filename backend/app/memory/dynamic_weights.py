@@ -44,8 +44,10 @@ class DynamicMemoryWeightsScheduler:
         # Memory load ratio: |M_t| / M_max
         m_load = min(2.0, max(0.0, active_items_count / max(1, max_items)))
 
-        # Contradiction density: C_t / |M_t|
-        rho_conflict = min(1.0, max(0.0, conflict_count / max(1, active_items_count)))
+        # Contradiction density: conflict_pairs / max(1, (n * (n - 1)) / 2)
+        n = max(1, active_items_count)
+        max_possible_pairs = (n * (n - 1)) / 2.0 if n >= 2 else 1.0
+        rho_conflict = min(1.0, max(0.0, conflict_count / max(1.0, max_possible_pairs)))
 
         base = self.base_weights
 
@@ -83,6 +85,22 @@ class DynamicMemoryWeightsScheduler:
         # 9. Age Cost Decay (lambda_t): Eviction accelerates exponentially under memory pressure
         # lambda_t = lambda_0 * exp(0.5 * m_load)
         lam = base.lambda_age_cost * math.exp(0.5 * m_load)
+
+        # Normalization of positive weights to strictly sum to 1.0
+        # Prevents weight explosion and keeps retention_threshold = 0.50 consistent across hops
+        pos_sum = alpha + beta + gamma + delta + epsilon + zeta
+        if pos_sum > 0:
+            alpha = alpha / pos_sum
+            beta = beta / pos_sum
+            gamma = gamma / pos_sum
+            delta = delta / pos_sum
+            epsilon = epsilon / pos_sum
+            zeta = zeta / pos_sum
+
+        # Penalties bounded to prevent negative score collapse
+        eta = min(0.5, eta / 10.0 if eta > 1.0 else eta)
+        theta = min(0.8, theta / 10.0 if theta > 1.0 else theta)
+        lam = min(0.3, lam)
 
         return MemoryWeightsConfig(
             alpha_relevance=round(alpha, 4),

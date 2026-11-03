@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+# Ensure environment variables (.env) are loaded
+load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env")))
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 import json

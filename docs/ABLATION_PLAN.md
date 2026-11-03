@@ -1,8 +1,8 @@
-# Systematic Ablation Plan (Phase 20)
+# Systematic Ablation Plan (Phase 20 & Novelty Proofs)
 
-## 1. The 10 Experimental Variants
+## 1. The 12 Systematic Experimental Variants (A–L)
 
-To scientifically isolate the contribution of each module, the ablation suite evaluates 10 variant configurations:
+To scientifically isolate the contribution of each module, the ablation suite evaluates 12 systematic variant configurations. Variants A–J form the progressive architectural pipeline ladder, while Variants K and L provide targeted negative ablations isolating Novel Contributions 1 and 2:
 
 | Variant ID | Configuration Name | Description | Key Mechanism Evaluated |
 | :--- | :--- | :--- | :--- |
@@ -12,10 +12,21 @@ To scientifically isolate the contribution of each module, the ablation suite ev
 | **D** | **Multi-Hop + Query Decomp** | Atomic query decomposition without memory curation. | Structured sub-query generation. |
 | **E** | **Multi-Hop + Adaptive Retrieval** | Uncertainty-gated retrieval. | Retrieval efficiency & call reduction. |
 | **F** | **Multi-Hop + Verification** | Post-hop self-reflection and factual checking. | Hallucination mitigation. |
-| **G** | **Multi-Hop + Adaptive Memory** | Dynamic Working Memory with 11 operations & scoring. | Core active memory curation. |
-| **H** | **Adaptive Memory + Conflicts** | Dynamic memory + Contradiction detection & resolution. | Robustness against noisy/conflicting data. |
-| **I** | **Adaptive Memory + MCTS** | 5-Action MCTS with Branch vs Global memory isolation. | Exhaustive tree search exploration. |
-| **J** | **FULL MASTER SYSTEM** | Adaptive State-Aware Multi-Hop RAG (All components). | Synergistic overall performance. |
+| **G** | **Multi-Hop + Adaptive Memory** | Dynamic Working Memory with 11 operations & static scoring. | Core active memory curation. |
+| **H** | **Adaptive Memory + Conflicts** | G + Contradiction detection & resolution heuristic. | Robustness against noisy/conflicting data. |
+| **I** | **Adaptive Memory + MCTS** | H + Real UCT MCTS Tree Search (Static Weights). | Isolates MCTS planning search over Socratic. |
+| **J** | **FULL MASTER SYSTEM** | I + State-Conditioned Dynamic Weight Scheduling (Full Adaptive). | Synergistic overall system performance. |
+| **K** | **Full System - Static Weights** | J with Dynamic Weight Scheduling disabled (`dynamic_weights=False`). | **Ablates Contribution 1** (Dynamic Weight Scheduling). |
+| **L** | **MCTS - Shared Branch Memory** | MCTS with shared branch memory instead of clone isolation. | **Ablates Contribution 2** (Branch Memory Isolation). |
+
+---
+
+### Step-by-Step Isolation Guarantee
+- **G $\rightarrow$ H**: Isolates Contradiction Resolution (Socratic planner and static weights held constant).
+- **H $\rightarrow$ I**: Isolates MCTS Tree Search (Static weights held constant).
+- **I $\rightarrow$ J**: Isolates State-Conditioned Dynamic Weight Scheduling (Advanced MCTS planner held constant).
+- **J vs K**: Targeted negative proof isolating Dynamic Weight Scheduling (Contribution 1).
+- **I vs L**: Targeted negative proof isolating Branch Memory Isolation (Contribution 2).
 
 ---
 

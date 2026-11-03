@@ -3,7 +3,15 @@ import time
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# torchvision guard — must come before any transformers/bert_score import
+if "torchvision" not in sys.modules:
+    sys.modules["torchvision"] = None
+
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, BACKEND_DIR)
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
 from app.core.config import get_config, update_config
 from app.core.state import MemoryItem, MemoryStatus, MemoryOperation, Provenance
@@ -33,7 +41,7 @@ class TestAdaptiveMemoryManagement(unittest.TestCase):
         )
         self.assertEqual(len(self.mgr.get_active_items()), 1)
         self.assertEqual(item.status, MemoryStatus.ACTIVE)
-        self.assertGreater(item.retention_score, 1.0)
+        self.assertGreater(item.retention_score, 0.50)
 
     def test_02_memory_update(self):
         """Test Memory UPDATE operation."""
@@ -72,6 +80,28 @@ class TestAdaptiveMemoryManagement(unittest.TestCase):
         self.assertEqual(len(self.mgr.get_active_items()), 1)
         self.assertIn("chunk_a", self.mgr.get_active_items()[0].source_chunk_ids)
         self.assertIn("chunk_b", self.mgr.get_active_items()[0].source_chunk_ids)
+
+    def test_03b_conflicting_values_prevent_merge(self):
+        """Test that high-similarity items with conflicting numerical values ($100B vs $110B) are NOT merged."""
+        mgr = AdaptiveMemoryManager(max_items=4)
+        item1 = mgr.add_item(
+            content="Apple revenue was $100B in 2023.",
+            source_chunk_ids=["chunk_rev1"],
+            source_text="Apple revenue was $100B in 2023.",
+            query="Apple revenue 2023",
+            hop=1
+        )
+        item2 = mgr.add_item(
+            content="Apple revenue was $110B in 2023.",
+            source_chunk_ids=["chunk_rev2"],
+            source_text="Apple reported revenue of $110B in 2023.",
+            query="Apple revenue 2023",
+            hop=2
+        )
+        res = mgr.consolidate_memory(current_hop=2, main_question="What was Apple revenue?")
+        # Must NOT merge conflicting numerical amounts
+        self.assertEqual(res["duplicates_merged"], 0)
+        self.assertIn(item2.id, item1.conflicting_item_ids)
 
     def test_04_memory_deletion_and_pruning(self):
         """Test Memory DELETE and capacity limit enforcement."""

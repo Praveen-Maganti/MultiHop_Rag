@@ -14,7 +14,7 @@ A research-grade **Adaptive State-Aware Multi-Hop Retrieval-Augmented Generation
    - **MCTS Complex Reasoning Mode**: Monte Carlo Tree Search exploring 5 distinct actions ($A_1$ Decompose, $A_2$ Consolidate, $A_3$ Refine, $A_4$ Redirect, $A_5$ Conclude) with branch-local isolation and verified global promotion.
 5. **Path-Outcome Dual Reward System**: Evaluates local intermediate reasoning quality ($R_p$) and terminal goal satisfaction ($R_o$) using the ACL 2026 Dual Reward formulation.
 6. **End-to-End Provenance & Citations**: Every fact tracks its chunk ID, retrieval query, rank, timestamp, and verification status.
-7. **10-Variant Systematic Ablation Suite**: Isolates the performance contribution of every component from standard RAG to the full adaptive architecture.
+7. **12-Variant Systematic Ablation Suite**: Isolates the performance contribution of every component from standard RAG (A) to the full adaptive architecture (J) plus targeted novelty proofs (K, L).
 
 ---
 
@@ -72,4 +72,4 @@ python tests/test_end_to_end_multihop.py
 - [`docs/MEMORY_MANAGEMENT.md`](docs/MEMORY_MANAGEMENT.md): Detailed algorithm specifications for the 11 dynamic memory operations.
 - [`docs/RETRIEVAL_AND_PLANNING.md`](docs/RETRIEVAL_AND_PLANNING.md): Hybrid retrieval, RRF, and planning engines.
 - [`docs/EVALUATION.md`](docs/EVALUATION.md): Dual reward metrics and benchmarking guide.
-- [`docs/ABLATION_PLAN.md`](docs/ABLATION_PLAN.md): 10-variant experimental ablation matrix.
+- [`docs/ABLATION_PLAN.md`](docs/ABLATION_PLAN.md): 12-variant experimental ablation matrix (A–L).

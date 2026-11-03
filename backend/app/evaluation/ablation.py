@@ -1,6 +1,8 @@
 """
 Systematic Ablation Framework for Adaptive State-Aware RAG
-Implements automated benchmarking across all 10 variant configurations (Phase 20).
+Implements automated benchmarking across all 12 systematic ablation variants (A-L).
+Variants A-J form the progressive architectural pipeline ladder, while Variants K and L
+provide isolated targeted ablations for Novel Contributions 1 and 2.
 """
 
 from typing import List, Dict, Any, Optional
@@ -338,18 +340,25 @@ def _run_variant_h(document_id: str, question: str, ground_truth: str = None) ->
 
 
 # =============================================================================
-# Variant I: Adaptive Memory + MCTS Tree Search
-# Uses the real UCT MCTS engine from adaptive_rag.py
+# Variant I: Adaptive Memory + MCTS Tree Search (Static Weights)
+# Isolates UCT MCTS Tree Search over Socratic H by keeping static retention weights.
+# Dynamic weights are introduced in Variant J, ensuring strict 1-variable delta.
 # =============================================================================
 def _run_variant_i(document_id: str, question: str, ground_truth: str = None) -> Dict[str, Any]:
-    """Adaptive Memory + Real UCT MCTS Tree Search."""
-    result = run_adaptive_state_aware_rag(
-        document_id=document_id,
-        question=question,
-        ground_truth=ground_truth,
-        mode="mcts"
-    )
-    result["metrics"]["mode"] = "Adaptive Memory + MCTS Tree Search"
+    """Adaptive Memory + Real UCT MCTS Tree Search with static weights (isolates MCTS planner)."""
+    cfg = get_config()
+    original_flag = cfg.memory.dynamic_weights
+    cfg.memory.dynamic_weights = False
+    try:
+        result = run_adaptive_state_aware_rag(
+            document_id=document_id,
+            question=question,
+            ground_truth=ground_truth,
+            mode="mcts"
+        )
+    finally:
+        cfg.memory.dynamic_weights = original_flag
+    result["metrics"]["mode"] = "Adaptive Memory + MCTS Tree Search (Static Weights)"
     return result
 
 
@@ -519,7 +528,7 @@ def _run_variant_l(document_id: str, question: str, ground_truth: str = None) ->
 # =============================================================================
 class AblationFramework:
     """
-    Compares all 10 architectural variants across metrics:
+    Compares all 12 systematic ablation variants (A-L) across metrics:
     - F1, Exact Match, BERTScore (Primary)
     - Evidence Coverage & Unsupported Claim Ratio
     - Retrieval Calls, Token Usage, Latency
@@ -532,10 +541,10 @@ class AblationFramework:
         "D_multihop_decomp":            "D. Multi-Hop + Query Decomposition",
         "E_multihop_adaptive_retrieval":"E. Multi-Hop + Uncertainty-Gated Retrieval",
         "F_multihop_verification":      "F. Multi-Hop + Fact Verification",
-        "G_adaptive_memory":            "G. Multi-Hop + Dynamic Working Memory",
-        "H_memory_contradiction":       "H. Adaptive Memory + Contradiction Resolution",
-        "I_adaptive_mcts":              "I. Adaptive Memory + MCTS Tree Search",
-        "J_full_system":                "J. Full Adaptive State-Aware RAG (Master)",
+        "G_adaptive_memory":            "G. Multi-Hop + Socratic Working Memory (Static Weights)",
+        "H_memory_contradiction":       "H. Adaptive Memory + Contradiction Resolution (Static Weights)",
+        "I_adaptive_mcts":              "I. Adaptive Memory + MCTS Tree Search (Static Weights)",
+        "J_full_system":                "J. Full Adaptive State-Aware RAG (Dynamic Weights)",
         "K_static_weights":             "K. Full System - Static Weights (Ablates Contribution 1)",
         "L_shared_branch_memory":       "L. MCTS - Shared Branch Memory (Ablates Contribution 2)",
     }
