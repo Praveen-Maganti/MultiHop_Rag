@@ -716,18 +716,34 @@ class AdaptiveStateAwareRAG:
             total_llm_tokens += 120
 
             # Promote verified items from rollout branch to global memory
+            # Requires: evidence_strength >= 0.75 AND no contradiction AND
+            # not already contradicted by existing global memory items
             for itm in rollout_target.branch_memory.get_active_items():
-                if itm.evidence_strength >= 0.70:
-                    memory_sys.global_memory.add_item(
-                        content=itm.content,
-                        source_chunk_ids=list(itm.source_chunk_ids),
-                        source_text=itm.source_text,
-                        query=f"Promoted from MCTS rollout {rollout_idx+1}",
-                        hop=rollout_target.depth,
-                        relevance=itm.relevance_score,
-                        evidence_strength=itm.evidence_strength,
-                        provenance_list=list(itm.provenance)
-                    )
+                if (
+                    itm.evidence_strength >= 0.75
+                    and itm.contradiction_status != "DETECTED"
+                    and itm.verification_status != "REFUTED"
+                ):
+                    # Check against existing global memory for contradictions before promoting
+                    conflict_with_global = False
+                    for g_itm in memory_sys.global_memory.get_active_items():
+                        from app.memory.adaptive_manager import has_conflicting_values, cached_detect_conflict
+                        if has_conflicting_values(itm.content, g_itm.content):
+                            c_res = cached_detect_conflict(itm.content, g_itm.content)
+                            if c_res.get("conflict_score", 0.0) >= 0.5:
+                                conflict_with_global = True
+                                break
+                    if not conflict_with_global:
+                        memory_sys.global_memory.add_item(
+                            content=itm.content,
+                            source_chunk_ids=list(itm.source_chunk_ids),
+                            source_text=itm.source_text,
+                            query=f"Promoted from MCTS rollout {rollout_idx+1}",
+                            hop=rollout_target.depth,
+                            relevance=itm.relevance_score,
+                            evidence_strength=itm.evidence_strength,
+                            provenance_list=list(itm.provenance)
+                        )
 
             path_trace = [
                 f"[{n.action.value if hasattr(n.action, 'value') else str(n.action)}] {n.question[:60]} => {n.subanswer[:60]}"

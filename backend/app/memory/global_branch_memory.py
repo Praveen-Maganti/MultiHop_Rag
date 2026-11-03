@@ -51,18 +51,29 @@ class GlobalBranchMemorySystem:
         current_hop: int = 1
     ) -> Optional[MemoryItem]:
         """
-        Promotes a high-confidence, non-contradicted branch item to the shared global memory.
+        Promotes a branch item to global memory only if it passes:
+        1. Confidence threshold
+        2. No active contradiction within its branch
+        3. No conflict with existing global memory items
         """
         branch_mgr = self.get_branch_memory(branch_id)
         candidate = next((i for i in branch_mgr.items if i.id == item_id), None)
         if not candidate:
             return None
 
-        # Check eligibility
+        # Gate 1: confidence and contradiction status
         if candidate.confidence < confidence_threshold or candidate.contradiction_status == "DETECTED":
             return None
 
-        # Add to global memory and consolidate
+        # Gate 2: check for conflicts against existing global memory
+        from app.memory.adaptive_manager import has_conflicting_values, cached_detect_conflict
+        for g_item in self.global_memory.get_active_items():
+            if has_conflicting_values(candidate.content, g_item.content):
+                c_res = cached_detect_conflict(candidate.content, g_item.content)
+                if c_res.get("conflict_score", 0.0) >= 0.5:
+                    return None  # Reject promotion — conflicts with verified global fact
+
+        # Promote to global memory
         promoted = self.global_memory.add_item(
             content=candidate.content,
             source_chunk_ids=list(candidate.source_chunk_ids),

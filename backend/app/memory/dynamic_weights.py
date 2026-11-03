@@ -138,11 +138,11 @@ class DynamicMemoryWeightsScheduler:
             "phase": "exploration" if t == 1 else ("synthesis" if t >= T else "intermediate_reasoning"),
             "weights": w.model_dump() if hasattr(w, "model_dump") else w.dict(),
             "dynamics": {
-                "novelty_decay_pct": round((1.0 - (w.gamma_novelty / self.base_weights.gamma_novelty)) * 100, 1),
+                "novelty_decay_pct": round((1.0 - max(0.1, 1.0 - 0.75 * min(1.0, current_hop / max(current_hop, total_hops)))) * 100, 1),
                 "future_utility_active": w.delta_future_utility > 0.0,
-                "verification_boost_pct": round(((w.zeta_verification / self.base_weights.zeta_verification) - 1.0) * 100, 1),
+                "verification_boost_pct": round(0.8 * min(1.0, current_hop / max(current_hop, total_hops)) * 100, 1),
                 "memory_saturation_ratio": round(active_items_count / max(1, max_items), 2),
-                "conflict_escalation_pct": round(((w.theta_conflict_penalty / self.base_weights.theta_conflict_penalty) - 1.0) * 100, 1)
+                "conflict_escalation_pct": round(1.5 * min(1.0, conflict_count / max(1, active_items_count)) * 100, 1)
             }
         }
 
